@@ -21,7 +21,7 @@ Two entry points: generate a single post from a topic you supply, or run a job t
 - **Frontend**: React 18 + TypeScript, Vite, Tailwind CSS, Radix UI
 - **Backend**: Express 4, TypeScript, ES modules
 - **Database**: Postgres via Drizzle ORM on Neon serverless — `users`, `posts`, `categories`, `tags`, `comments`
-- **AI**: OpenAI (gpt-4o, gpt-4o-search-preview, gpt-5)
+- **AI**: OpenAI — `gpt-4o` throughout, plus `gpt-4o-search-preview` for the web-search step
 - **Auth**: Passport
 - **Media**: Google Cloud Storage
 - **Diagrams**: Mermaid
