@@ -141,7 +141,7 @@ export function Header() {
                   <Button
                     variant="ghost"
                     onClick={() => {
-                      logout();
+                      void logout();
                       setIsMobileMenuOpen(false);
                     }}
                     className="w-full justify-start text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20"

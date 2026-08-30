@@ -30,17 +30,52 @@ Two entry points: generate a single post from a topic you supply, or run a job t
 
 ```bash
 npm install
+cp .env.example .env   # then fill it in
 npm run dev
 ```
 
-Needs `DATABASE_URL` (Neon Postgres) and an OpenAI API key in the environment. Then:
+`npm run dev` loads `.env` via dotenv. Required variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Postgres connection string (Neon serverless) |
+| `OPENAI_API_KEY` | Required at startup — the agents construct their clients eagerly |
+| `ADMIN_PASSWORD` | Gates every admin and agent route. **If unset, those routes refuse with 503 rather than falling open.** |
+
+Other scripts:
 
 ```bash
 npm run db:push   # apply the Drizzle schema
-npm run build     # vite build + esbuild the server
-npm start         # run the production build
+npm run build     # vite build (client only)
 npm run check     # typecheck
 ```
+
+> **Known issue:** `npm start` runs `node dist/index.js`, but `npm run build` only
+> builds the client — nothing emits `dist/index.js`. Use `npm run dev`, or bundle
+> the server separately, until the build script is fixed.
+
+## Admin access
+
+The dashboard lives at `/ai-dashboard`, behind `/admin`.
+
+Sign-in posts the password to `/api/admin/login`; the server compares it against
+`ADMIN_PASSWORD` in constant time and returns a random 32-byte session token,
+held in memory for 12 hours. The client sends it as `Authorization: Bearer <token>`
+and the server rejects anything else. Tokens die on restart, and `/api/admin/logout`
+revokes one immediately.
+
+The admin password is never present in client code.
+
+## Generation options
+
+Both generation modes accept:
+
+- **Model** — `gpt-4o`, `gpt-4o-mini`, `gpt-4.1` or `gpt-4.1-mini`, applied to drafting,
+  review, enhancement and knowledge gathering for that run. The web-search step is
+  pinned to a search-enabled model and is not selectable.
+- **Target keywords** — comma-separated. The first is treated as primary and is steered
+  into the title and opening paragraph; the rest inform headings and meta fields. The
+  prompt explicitly instructs against keyword-stuffing.
 
 ## API
 
@@ -54,15 +89,20 @@ Public reading:
 | `GET` | `/api/categories` | List categories |
 | `POST` | `/api/comments/:id/like` | Like a comment |
 
-Agent controls (admin):
+Admin — all require a valid bearer token:
 
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/ai/generate` | Run the pipeline over recent news |
-| `POST` | `/api/ai/generate-custom` | Generate one post from a topic + custom instruction |
+| `POST` | `/api/ai/generate-custom` | Generate one post from a topic, keywords and instructions |
 | `GET` | `/api/ai/jobs` | Inspect generation jobs |
+| `DELETE` | `/api/ai/jobs/:jobId` | Cancel a job |
 | `GET` | `/api/ai/news` | Inspect fetched news articles |
 | `GET` | `/api/ai/stats` | Generation statistics |
+| `GET` | `/api/posts/drafts` | List unpublished drafts |
+| `POST` | `/api/posts` | Create a post |
+| `PUT` | `/api/posts/:id` | Update a post |
+| `DELETE` | `/api/posts/:id` | Delete a post |
 
 ## Note
 

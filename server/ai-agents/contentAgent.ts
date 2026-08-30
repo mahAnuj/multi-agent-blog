@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { NewsArticle } from './newsAgent.js';
 import type { KnowledgeContext } from './latestKnowledgeAgent.js';
+import { DEFAULT_MODEL, type ChatModel } from "./models.js";
 
 export interface GeneratedContent {
   title: string;
@@ -27,6 +28,8 @@ export interface GeneratedContent {
 
 export class ContentAgent {
   private openai: OpenAI;
+  /** Chat model for this agent; set per-run by the orchestrator. */
+  model: ChatModel = DEFAULT_MODEL;
   private storage: any; // Will be injected
 
   constructor(storage?: any) {
@@ -57,7 +60,7 @@ export class ContentAgent {
       const prompt = this.buildSingleArticlePrompt(article, focusTopic, knowledgeContext);
       
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+        model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
         messages: [
           {
             role: "system",
@@ -150,7 +153,7 @@ WRITING STYLE:
   }
 
   // New method for generating multiple posts
-  async generateMultipleBlogPosts(articles: NewsArticle[], focusTopic?: string, knowledgeContext?: KnowledgeContext): Promise<GeneratedContent[]> {
+  async generateMultipleBlogPosts(articles: NewsArticle[], focusTopic?: string, knowledgeContext?: KnowledgeContext, keywords?: string): Promise<GeneratedContent[]> {
     console.log(`Generating ${articles.length} individual blog posts...`);
     
     const posts: GeneratedContent[] = [];
@@ -394,7 +397,7 @@ ${sources.map(source => `- **[${source.title}](${source.url})** - ${source.publi
         Return only the code, no explanations or markdown formatting.`;
 
         const completion = await this.openai.chat.completions.create({
-          model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+          model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
           messages: [
             {
               role: "system",
@@ -431,7 +434,7 @@ ${sources.map(source => `- **[${source.title}](${source.url})** - ${source.publi
     try {
       // Use OpenAI to simulate web search with current knowledge
       const searchCompletion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [
           {
             role: "system",
@@ -502,7 +505,7 @@ ${context.authorativeSources.map(source =>
       // For now, we'll use OpenAI with up-to-date knowledge
       // In the future, this could be enhanced with web_search tool
       const researchCompletion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [
           {
             role: "system",
@@ -715,7 +718,7 @@ ${context.authorativeSources.map(source =>
 - Practical applications and next steps`;
   }
 
-  async generateCustomBlogPost(topic: string, userPrompt?: string, knowledgeContext?: KnowledgeContext): Promise<GeneratedContent> {
+  async generateCustomBlogPost(topic: string, userPrompt?: string, knowledgeContext?: KnowledgeContext, keywords?: string): Promise<GeneratedContent> {
     try {
       console.log(`Generating custom blog post for topic: ${topic}`);
 
@@ -751,6 +754,24 @@ ${relatedPosts.length > 0 ? relatedPosts.map(post => `- [${post.title}](${post.s
 ${userPrompt}
 
 IMPORTANT: Follow the user instructions above while maintaining all other requirements below.`;
+      }
+
+      // Target keywords steer the title, meta fields and section headings.
+      const keywordList = (keywords ?? '')
+        .split(',')
+        .map(k => k.trim())
+        .filter(Boolean);
+
+      if (keywordList.length > 0) {
+        prompt += `
+
+**TARGET KEYWORDS:**
+${keywordList.map(k => `- ${k}`).join('\n')}
+
+Weave these naturally into the title, metaTitle, metaDescription, headings and body.
+Do not keyword-stuff: if a keyword does not fit the argument, leave it out rather
+than forcing it. The first keyword is the primary one and should appear in the
+title and the opening paragraph.`;
       }
 
       prompt += `
@@ -866,7 +887,7 @@ CRITICAL REQUIREMENTS:
 - Both protocols are revolutionizing AI agent ecosystems and multi-agent systems`;
 
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+        model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
         messages: [
           {
             role: "system", 

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { DEFAULT_MODEL, SEARCH_MODEL, type ChatModel } from "./models.js";
 
 export interface KnowledgeContext {
   topic: string;
@@ -17,6 +18,8 @@ export interface KnowledgeContext {
 
 export class LatestKnowledgeAgent {
   private openai: OpenAI;
+  /** Chat model for this agent; set per-run by the orchestrator. */
+  model: ChatModel = DEFAULT_MODEL;
 
   constructor() {
     this.openai = new OpenAI({
@@ -74,7 +77,7 @@ export class LatestKnowledgeAgent {
     Make queries specific and targeted for getting current, authoritative information.`;
 
     const completion = await this.openai.chat.completions.create({
-      model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+      model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
       messages: [
         {
           role: "system",
@@ -159,7 +162,7 @@ export class LatestKnowledgeAgent {
     }`;
 
     const completion = await this.openai.chat.completions.create({
-      model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+      model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
       messages: [
         {
           role: "system",
@@ -220,7 +223,7 @@ export class LatestKnowledgeAgent {
       let searchCompletion;
       try {
         searchCompletion = await this.openai.chat.completions.create({
-          model: "gpt-4o-search-preview", // Using OpenAI's web search enabled model
+          model: SEARCH_MODEL, // Using OpenAI's web search enabled model
           messages: [
             {
               role: "user",
@@ -248,7 +251,7 @@ Focus on factual, verifiable information with source attribution when possible.`
         
         // Fallback to regular gpt-4o with enhanced knowledge about current AI protocols
         searchCompletion = await this.openai.chat.completions.create({
-          model: "gpt-4o",
+          model: this.model,
           messages: [
             {
               role: "system",

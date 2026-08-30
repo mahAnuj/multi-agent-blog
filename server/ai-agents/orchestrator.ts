@@ -5,17 +5,22 @@ import type { ReviewAgent, ReviewResult } from './reviewAgent.js';
 import type { EnhanceAgent, EnhancementResult } from './enhanceAgent.js';
 import { LatestKnowledgeAgent } from './latestKnowledgeAgent.js';
 import type { IStorage } from '../storage.js';
+import { resolveModel, DEFAULT_MODEL, type ChatModel } from "./models.js";
 
 export interface GenerationConfig {
   hoursBack: number;
   minRelevanceScore: number;
   maxArticles: number;
   focusTopic?: string;
+  keywords?: string | null;
+  model?: ChatModel;
 }
 
 export interface CustomGenerationConfig {
   topic: string;
   userPrompt?: string | null;
+  keywords?: string | null;
+  model?: ChatModel;
   type: 'custom';
 }
 
@@ -101,14 +106,16 @@ class AIOrchestrator {
         hoursBack: 0, // Not used for custom generation
         minRelevanceScore: 0, // Not used for custom generation
         maxArticles: 1, // Generate one post
-        focusTopic: config.topic
+        focusTopic: config.topic,
+        keywords: config.keywords ?? null,
+        model: config.model
       }
     };
 
     this.jobs.set(jobId, job);
     
     // Start the custom generation process asynchronously
-    this.processCustomGeneration(jobId, config.topic, config.userPrompt).catch(error => {
+    this.processCustomGeneration(jobId, config.topic, config.userPrompt, config.keywords, config.model).catch(error => {
       console.error(`Custom generation job ${jobId} failed:`, error);
       this.updateJob(jobId, {
         status: 'failed',
@@ -120,10 +127,22 @@ class AIOrchestrator {
     return jobId;
   }
 
-  private async processCustomGeneration(jobId: string, topic: string, userPrompt?: string | null): Promise<void> {
+  /** Point every LLM-backed agent at the model chosen for this run. */
+  private applyModel(model?: ChatModel): void {
+    const resolved = resolveModel(model);
+    this.contentAgent.model = resolved;
+    this.reviewAgent.model = resolved;
+    this.enhanceAgent.model = resolved;
+    this.knowledgeAgent.model = resolved;
+    console.log(`\u{1F9E0} Using model: ${resolved}`);
+  }
+
+  private async processCustomGeneration(jobId: string, topic: string, userPrompt?: string | null, keywords?: string | null, model?: ChatModel): Promise<void> {
     console.log(`🔍 Starting custom generation job ${jobId} for topic: ${topic}`);
 
     try {
+      this.applyModel(model);
+
       // Step 1: Gather latest knowledge using LatestKnowledgeAgent
       this.updateJob(jobId, { status: 'fetching', progress: 15 });
       console.log(`🧠 Gathering latest knowledge for: ${topic}`);
@@ -131,7 +150,7 @@ class AIOrchestrator {
       
       // Step 2: Generate blog post with current knowledge context
       this.updateJob(jobId, { status: 'generating', progress: 40 });
-      const generatedContent = await this.contentAgent.generateCustomBlogPost(topic, userPrompt || undefined, knowledgeContext);
+      const generatedContent = await this.contentAgent.generateCustomBlogPost(topic, userPrompt || undefined, knowledgeContext, keywords || undefined);
 
       // Step 2: Create code samples if suggested
       this.updateJob(jobId, { status: 'generating', progress: 60 });
@@ -188,6 +207,7 @@ class AIOrchestrator {
       // Step 1: Gather latest knowledge using LatestKnowledgeAgent
       this.updateJob(jobId, { status: 'fetching', progress: 5 });
       const job = this.getJob(jobId)!;
+      this.applyModel(job.config.model);
       let knowledgeContext;
       
       if (job.config.focusTopic) {
@@ -214,7 +234,7 @@ class AIOrchestrator {
 
       // Step 4: Generate multiple blog posts (one per article) with knowledge context
       this.updateJob(jobId, { status: 'generating', progress: 65 });
-      const generatedPosts = await this.contentAgent.generateMultipleBlogPosts(filteredArticles, job.config.focusTopic, knowledgeContext);
+      const generatedPosts = await this.contentAgent.generateMultipleBlogPosts(filteredArticles, job.config.focusTopic, knowledgeContext, job.config.keywords || undefined);
 
       // Step 4: Process each post with review agent
       this.updateJob(jobId, { status: 'reviewing', progress: 80 });

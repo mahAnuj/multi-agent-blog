@@ -26,7 +26,7 @@ export default function AdminLogin() {
     e.preventDefault();
     setIsLoading(true);
 
-    const success = login(password);
+    const success = await login(password);
     
     if (success) {
       toast({
@@ -37,7 +37,7 @@ export default function AdminLogin() {
     } else {
       toast({
         title: "Access denied",
-        description: "Invalid admin password",
+        description: "Invalid admin password, or admin access is not configured on the server.",
         variant: "destructive",
       });
     }

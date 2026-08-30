@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { GeneratedContent } from './contentAgent.js';
+import { DEFAULT_MODEL, type ChatModel } from "./models.js";
 
 export interface ReviewResult {
   approved: boolean;
@@ -18,6 +19,8 @@ export interface ReviewIssue {
 
 export class ReviewAgent {
   private openai: OpenAI;
+  /** Chat model for this agent; set per-run by the orchestrator. */
+  model: ChatModel = DEFAULT_MODEL;
 
   constructor() {
     if (!process.env.OPENAI_API_KEY) {
@@ -114,7 +117,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
 
     try {
       const response = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
         temperature: 0.1
@@ -436,7 +439,7 @@ Focus specifically on storytelling issues and section connectivity. Identify whe
 Rate both uniqueness AND storytelling flow on separate 1-10 scales.`;
 
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [
           {
             role: "system",
@@ -564,7 +567,7 @@ Identify specific areas where the content fails to provide sufficient value to r
 Rate the reader value on a scale of 1-10 and explain what would make it more valuable.`;
 
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [
           {
             role: "system",
@@ -658,7 +661,7 @@ As an end user who requested this content, evaluate:
 Be critical and thorough - if the content doesn't adequately address the original user request, flag it as an issue.`;
 
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o",
+        model: this.model,
         messages: [
           {
             role: "user",

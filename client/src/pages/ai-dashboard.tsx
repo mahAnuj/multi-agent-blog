@@ -11,8 +11,11 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { createApiUrl } from "@/lib/config";
+import { authHeaders } from "@/lib/admin-token";
 import { 
   Play, 
   Square, 
@@ -80,15 +83,21 @@ export default function AIDashboard() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const { isAdmin } = useAdmin();
+  const AVAILABLE_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"];
+
   const [generationConfig, setGenerationConfig] = useState({
     hoursBack: 24,
     minRelevanceScore: 0.7,
     maxArticles: 5,
-    focusTopic: ""
+    focusTopic: "",
+    keywords: "",
+    model: "gpt-4o"
   });
 
   const [customBlogTopic, setCustomBlogTopic] = useState("");
   const [customUserPrompt, setCustomUserPrompt] = useState("");
+  const [customKeywords, setCustomKeywords] = useState("");
+  const [customModel, setCustomModel] = useState("gpt-4o");
 
   // Redirect non-admin users to login
   if (!isAdmin) {
@@ -109,7 +118,7 @@ export default function AIDashboard() {
 
   const { data: newsPreview = [], refetch: refetchNews, isLoading: isLoadingNews } = useQuery<NewsArticle[]>({
     queryKey: ["/api/ai/news"],
-    queryFn: () => fetch(`/api/ai/news?hours=${generationConfig.hoursBack}`).then(res => res.json()),
+    queryFn: () => fetch(createApiUrl(`/api/ai/news?hours=${generationConfig.hoursBack}`), { headers: authHeaders(), credentials: "include" }).then(res => res.json()),
     enabled: false, // Only fetch when manually triggered
   });
 
@@ -148,7 +157,7 @@ export default function AIDashboard() {
   });
 
   const generateCustomBlogMutation = useMutation({
-    mutationFn: async (data: { topic: string; userPrompt?: string }) => {
+    mutationFn: async (data: { topic: string; userPrompt?: string; keywords?: string; model?: string }) => {
       const response = await apiRequest("POST", "/api/ai/generate-custom", data);
       return response.json();
     },
@@ -158,6 +167,7 @@ export default function AIDashboard() {
         description: `Started generating blog post about "${customBlogTopic}".`,
       });
       setCustomBlogTopic("");
+      setCustomKeywords("");
       setCustomUserPrompt("");
       refetchJobs();
     },
@@ -236,7 +246,9 @@ export default function AIDashboard() {
     }
     generateCustomBlogMutation.mutate({ 
       topic: customBlogTopic.trim(),
-      userPrompt: customUserPrompt.trim() || undefined
+      userPrompt: customUserPrompt.trim() || undefined,
+      keywords: customKeywords.trim() || undefined,
+      model: customModel
     });
   };
 
@@ -440,6 +452,37 @@ export default function AIDashboard() {
                     }))}
                   />
                 </div>
+                <div>
+                  <Label htmlFor="newsKeywords">Target Keywords (Optional)</Label>
+                  <Input
+                    id="newsKeywords"
+                    placeholder="e.g., vector database, RAG, embeddings"
+                    value={generationConfig.keywords}
+                    onChange={(e) => setGenerationConfig(prev => ({
+                      ...prev,
+                      keywords: e.target.value
+                    }))}
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Comma-separated. The first is treated as primary.
+                  </p>
+                </div>
+                <div>
+                  <Label htmlFor="newsModel">Model</Label>
+                  <Select value={generationConfig.model} onValueChange={(value) => setGenerationConfig(prev => ({ ...prev, model: value }))}>
+                    <SelectTrigger id="newsModel">
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {AVAILABLE_MODELS.map((m) => (
+                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Used for drafting, review and enhancement. Web search always uses a search-enabled model.
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -481,6 +524,34 @@ export default function AIDashboard() {
                   />
                   <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                     Provide specific instructions about content structure, sections to include, or focus areas
+                  </p>
+                </div>
+                <div>
+                  <Label htmlFor="customKeywords">Target Keywords (Optional)</Label>
+                  <Input
+                    id="customKeywords"
+                    placeholder="e.g., vector database, RAG, embeddings"
+                    value={customKeywords}
+                    onChange={(e) => setCustomKeywords(e.target.value)}
+                  />
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Comma-separated. The first appears in the title and opening paragraph.
+                  </p>
+                </div>
+                <div>
+                  <Label htmlFor="customModel">Model</Label>
+                  <Select value={customModel} onValueChange={setCustomModel}>
+                    <SelectTrigger id="customModel">
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {AVAILABLE_MODELS.map((m) => (
+                        <SelectItem key={m} value={m}>{m}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Used for drafting, review and enhancement. Web search always uses a search-enabled model.
                   </p>
                 </div>
                 <div className="flex justify-end">

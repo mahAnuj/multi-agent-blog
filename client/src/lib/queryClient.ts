@@ -1,5 +1,6 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { createApiUrl } from "./config";
+import { authHeaders, clearAdminToken } from "./admin-token";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -16,10 +17,16 @@ export async function apiRequest(
   const fullUrl = createApiUrl(url);
   const res = await fetch(fullUrl, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
+    headers: {
+      ...(data ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(),
+    },
     body: data ? JSON.stringify(data) : undefined,
     credentials: "include",
   });
+
+  // A rejected token is stale - drop it so the UI falls back to signed out.
+  if (res.status === 401) clearAdminToken();
 
   await throwIfResNotOk(res);
   return res;
@@ -39,10 +46,12 @@ export const getQueryFn: <T>(options: {
     const fullUrl = createApiUrl(url as string);
     const res = await fetch(fullUrl, {
       credentials: "include",
+      headers: authHeaders(),
     });
 
-    if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-      return null;
+    if (res.status === 401) {
+      clearAdminToken();
+      if (unauthorizedBehavior === "returnNull") return null;
     }
 
     await throwIfResNotOk(res);

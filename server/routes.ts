@@ -5,6 +5,15 @@ import fs from "fs";
 import { storage } from "./storage.js";
 import { insertPostSchema, insertCommentSchema, updatePostSchema } from "../shared/schema.js";
 import { z } from "zod";
+import { resolveModel, AVAILABLE_MODELS } from "./ai-agents/models.js";
+import {
+  requireAdmin,
+  verifyPassword,
+  issueToken,
+  revokeToken,
+  bearerToken,
+  isAdminConfigured,
+} from "./auth.js";
 import { AIOrchestrator } from "./ai-agents/orchestrator.js";
 import { NewsAgent } from "./ai-agents/newsAgent.js";
 import { ContentAgent } from "./ai-agents/contentAgent.js";
@@ -22,6 +31,33 @@ const aiOrchestrator = new AIOrchestrator(newsAgent, contentAgent, reviewAgent, 
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Health check endpoint - no database required
+  // ---- Admin authentication -------------------------------------------------
+  app.get("/api/admin/config", (req, res) => {
+    res.json({ configured: isAdminConfigured(), models: AVAILABLE_MODELS });
+  });
+
+  app.post("/api/admin/login", (req, res) => {
+    if (!isAdminConfigured()) {
+      return res.status(503).json({
+        message: "Admin access is not configured. Set ADMIN_PASSWORD in the environment.",
+      });
+    }
+    if (!verifyPassword(req.body?.password)) {
+      return res.status(401).json({ message: "Invalid admin password" });
+    }
+    res.json({ token: issueToken() });
+  });
+
+  app.post("/api/admin/logout", requireAdmin, (req, res) => {
+    revokeToken(bearerToken(req));
+    res.json({ ok: true });
+  });
+
+  // Lets the client check a stored token is still good on page load.
+  app.get("/api/admin/session", requireAdmin, (req, res) => {
+    res.json({ ok: true });
+  });
+
   app.get("/api/health", (req, res) => {
     res.json({ 
       status: "ok", 
@@ -79,7 +115,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Draft posts endpoint (for manual review)
-  app.get("/api/posts/drafts", async (req, res) => {
+  app.get("/api/posts/drafts", requireAdmin, async (req, res) => {
     try {
       const drafts = await storage.getPosts({ status: "draft" });
       res.json(drafts);
@@ -125,7 +161,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post("/api/posts", async (req, res) => {
+  app.post("/api/posts", requireAdmin, async (req, res) => {
     try {
       const validatedData = insertPostSchema.parse(req.body);
       const post = await storage.createPost(validatedData);
@@ -139,7 +175,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.put("/api/posts/:id", async (req, res) => {
+  app.put("/api/posts/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       const validatedData = updatePostSchema.parse(req.body);
@@ -159,7 +195,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete("/api/posts/:id", async (req, res) => {
+  app.delete("/api/posts/:id", requireAdmin, async (req, res) => {
     try {
       const { id } = req.params;
       const deleted = await storage.deletePost(id);
@@ -246,15 +282,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // AI Agent Routes
   
   // Start AI content generation
-  app.post("/api/ai/generate", async (req, res) => {
+  app.post("/api/ai/generate", requireAdmin, async (req, res) => {
     try {
-      const { hoursBack = 24, minRelevanceScore = 0.7, maxArticles = 5, focusTopic } = req.body;
+      const { hoursBack = 24, minRelevanceScore = 0.7, maxArticles = 5, focusTopic, keywords, model } = req.body;
       
       const jobId = await aiOrchestrator.startGeneration({
         hoursBack,
         minRelevanceScore,
         maxArticles,
-        focusTopic
+        focusTopic,
+        keywords: keywords?.trim() || null,
+        model: resolveModel(model)
       });
       
       res.json({ jobId, status: "started" });
@@ -265,7 +303,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get generation job status
-  app.get("/api/ai/jobs/:jobId", async (req, res) => {
+  app.get("/api/ai/jobs/:jobId", requireAdmin, async (req, res) => {
     try {
       const { jobId } = req.params;
       const job = aiOrchestrator.getJobStatus(jobId);
@@ -282,7 +320,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get all jobs (admin dashboard)
-  app.get("/api/ai/jobs", async (req, res) => {
+  app.get("/api/ai/jobs", requireAdmin, async (req, res) => {
     try {
       const jobs = aiOrchestrator.getAllJobs();
       res.json(jobs);
@@ -293,7 +331,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Cancel a generation job
-  app.delete("/api/ai/jobs/:jobId", async (req, res) => {
+  app.delete("/api/ai/jobs/:jobId", requireAdmin, async (req, res) => {
     try {
       const { jobId } = req.params;
       const cancelled = aiOrchestrator.cancelJob(jobId);
@@ -310,7 +348,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get AI generation statistics
-  app.get("/api/ai/stats", async (req, res) => {
+  app.get("/api/ai/stats", requireAdmin, async (req, res) => {
     try {
       const stats = aiOrchestrator.getStats();
       res.json(stats);
@@ -321,7 +359,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Preview news articles (for manual review)
-  app.get("/api/ai/news", async (req, res) => {
+  app.get("/api/ai/news", requireAdmin, async (req, res) => {
     try {
       const { hours = 24 } = req.query;
       const articles = await newsAgent.fetchLatestNews(Number(hours));
@@ -333,9 +371,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Generate custom blog post on specific topic
-  app.post("/api/ai/generate-custom", async (req, res) => {
+  app.post("/api/ai/generate-custom", requireAdmin, async (req, res) => {
     try {
-      const { topic, userPrompt } = req.body;
+      const { topic, userPrompt, keywords, model } = req.body;
       
       if (!topic || typeof topic !== 'string' || !topic.trim()) {
         return res.status(400).json({ error: "Topic is required" });
@@ -344,6 +382,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const jobId = await aiOrchestrator.startCustomGeneration({
         topic: topic.trim(),
         userPrompt: userPrompt?.trim() || null,
+        keywords: keywords?.trim() || null,
+        model: resolveModel(model),
         type: 'custom'
       });
       

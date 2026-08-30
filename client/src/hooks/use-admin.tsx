@@ -1,43 +1,93 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createApiUrl } from '@/lib/config';
+import {
+  getAdminToken,
+  setAdminToken,
+  clearAdminToken,
+  authHeaders,
+} from '@/lib/admin-token';
 
 interface AdminContextType {
   isAdmin: boolean;
-  login: (password: string) => boolean;
-  logout: () => void;
+  /** Resolves true when the server accepted the password. */
+  login: (password: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  isCheckingSession: boolean;
 }
 
 const AdminContext = createContext<AdminContextType | null>(null);
 
-// Simple admin password - in production, this would be more secure
-const ADMIN_PASSWORD = 'admin123'; // You can change this
-
 export function AdminProvider({ children }: { children: ReactNode }) {
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
 
+  // A token in storage proves nothing on its own - ask the server whether it
+  // is still valid. Sessions die on server restart, so this matters.
   useEffect(() => {
-    // Check if already logged in (stored in localStorage)
-    const adminStatus = localStorage.getItem('isAdmin');
-    if (adminStatus === 'true') {
-      setIsAdmin(true);
+    let cancelled = false;
+
+    async function validate() {
+      if (!getAdminToken()) {
+        if (!cancelled) setIsCheckingSession(false);
+        return;
+      }
+      try {
+        const res = await fetch(createApiUrl('/api/admin/session'), {
+          headers: authHeaders(),
+          credentials: 'include',
+        });
+        if (!cancelled) setIsAdmin(res.ok);
+        if (!res.ok) clearAdminToken();
+      } catch {
+        if (!cancelled) setIsAdmin(false);
+      } finally {
+        if (!cancelled) setIsCheckingSession(false);
+      }
     }
+
+    validate();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const login = (password: string): boolean => {
-    if (password === ADMIN_PASSWORD) {
+  const login = async (password: string): Promise<boolean> => {
+    try {
+      const res = await fetch(createApiUrl('/api/admin/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+        credentials: 'include',
+      });
+      if (!res.ok) return false;
+
+      const { token } = await res.json();
+      if (!token) return false;
+
+      setAdminToken(token);
       setIsAdmin(true);
-      localStorage.setItem('isAdmin', 'true');
       return true;
+    } catch {
+      return false;
     }
-    return false;
   };
 
-  const logout = () => {
+  const logout = async (): Promise<void> => {
+    try {
+      await fetch(createApiUrl('/api/admin/logout'), {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'include',
+      });
+    } catch {
+      /* revoke best-effort; the local token goes either way */
+    }
+    clearAdminToken();
     setIsAdmin(false);
-    localStorage.removeItem('isAdmin');
   };
 
   return (
-    <AdminContext.Provider value={{ isAdmin, login, logout }}>
+    <AdminContext.Provider value={{ isAdmin, login, logout, isCheckingSession }}>
       {children}
     </AdminContext.Provider>
   );

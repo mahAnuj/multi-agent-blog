@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { GeneratedContent } from './contentAgent.js';
 import type { ReviewResult } from './reviewAgent.js';
+import { DEFAULT_MODEL, type ChatModel } from "./models.js";
 
 export interface EnhancementResult {
   enhancedContent: GeneratedContent;
@@ -10,6 +11,8 @@ export interface EnhancementResult {
 
 export class EnhanceAgent {
   private openai: OpenAI;
+  /** Chat model for this agent; set per-run by the orchestrator. */
+  model: ChatModel = DEFAULT_MODEL;
 
   constructor() {
     if (!process.env.OPENAI_API_KEY) {
@@ -32,7 +35,7 @@ export class EnhanceAgent {
       const enhancementPrompt = this.buildEnhancementPrompt(content, reviewResult);
 
       const completion = await this.openai.chat.completions.create({
-        model: "gpt-4o", // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+        model: this.model, // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
         messages: [
           {
             role: "system",
