@@ -84,6 +84,10 @@ export const insertPostSchema = createInsertSchema(posts).omit({
   updatedAt: true,
   views: true,
   likes: true,
+}).extend({
+  // JSON has no date type, so HTTP clients can only ever send an ISO string.
+  // Without coercion every create/update carrying publishedAt is rejected.
+  publishedAt: z.coerce.date().nullish(),
 });
 
 export const insertCommentSchema = createInsertSchema(comments).omit({

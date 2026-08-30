@@ -9,6 +9,7 @@ import { SEOHead } from "@/components/seo-head";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
+import { createApiUrl } from "@/lib/config";
 import type { PostWithDetails, Tag } from "@shared/schema";
 
 export default function Home() {

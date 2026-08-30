@@ -18,11 +18,11 @@ interface BlogPostCardProps {
     views: number;
     likes: number;
     commentsCount: number;
-    publishedAt?: string | null;
-    createdAt: string;
+    publishedAt?: string | Date | null;
+    createdAt: string | Date;
     author: {
       name: string;
-      avatar?: string;
+      avatar?: string | null;
     };
     category: {
       name: string;

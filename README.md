@@ -46,13 +46,13 @@ Other scripts:
 
 ```bash
 npm run db:push   # apply the Drizzle schema
-npm run build     # vite build (client only)
+npm run build     # vite build + esbuild the server into dist/
 npm run check     # typecheck
 ```
 
-> **Known issue:** `npm start` runs `node dist/index.js`, but `npm run build` only
-> builds the client — nothing emits `dist/index.js`. Use `npm run dev`, or bundle
-> the server separately, until the build script is fixed.
+```bash
+npm run build && npm start   # production: bundled server on dist/index.js
+```
 
 ## Admin access
 

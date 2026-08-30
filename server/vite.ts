@@ -59,12 +59,17 @@ export async function setupVite(app: Express, server: Server) {
 }
 
 export function serveStatic(app: Express) {
-  // Serve the built client from client/dist when present
-  const distPath = path.resolve(import.meta.dirname, "..", "client", "dist");
+  // Vite builds the client to <repo>/dist/public. Resolve that whether this file
+  // is running bundled (dist/index.js) or straight from source via tsx (server/).
+  const candidates = [
+    path.resolve(import.meta.dirname, "public"),
+    path.resolve(import.meta.dirname, "..", "dist", "public"),
+  ];
+  const distPath = candidates.find((candidate) => fs.existsSync(candidate));
 
-  if (!fs.existsSync(distPath)) {
+  if (!distPath) {
     throw new Error(
-      `Could not find the build directory: ${distPath}, set SERVE_STATIC=false or build the client first`,
+      `Could not find the client build. Looked in:\n  ${candidates.join("\n  ")}\nRun "npm run build" first.`,
     );
   }
 

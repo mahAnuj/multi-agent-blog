@@ -59,7 +59,6 @@ Return a JSON object with this exact structure:
   "metaTitle": "SEO optimized title",
   "metaDescription": "SEO meta description",
   "sources": [...],
-  "diagrams": ["diagram descriptions if any"],
   "improvementsMade": ["list of specific improvements"]
 }`
           },
@@ -86,7 +85,6 @@ Return a JSON object with this exact structure:
         summary: parsedEnhancement.summary || content.summary,
         tags: Array.isArray(parsedEnhancement.tags) ? parsedEnhancement.tags : content.tags,
         sources: content.sources, // Preserve original sources
-        diagrams: Array.isArray(parsedEnhancement.diagrams) ? parsedEnhancement.diagrams : content.diagrams,
         featuredImage: content.featuredImage,
         metaTitle: parsedEnhancement.metaTitle || content.metaTitle,
         metaDescription: parsedEnhancement.metaDescription || content.metaDescription

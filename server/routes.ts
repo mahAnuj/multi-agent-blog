@@ -423,7 +423,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`🔒 SSL Key: ${sslKeyPath}`);
       console.log(`🔒 SSL Cert: ${sslCertPath}`);
     } catch (error) {
-      console.error('❌ Failed to load SSL certificates, falling back to HTTP:', error.message);
+      console.error('❌ Failed to load SSL certificates, falling back to HTTP:', error instanceof Error ? error.message : error);
       httpServer = createServer(app);
       console.log('🔓 HTTP server configured (SSL fallback)');
     }
