@@ -10,6 +10,7 @@ npm run dev      # tsx server/index.ts, API + Vite client together on :5000
 npm run build    # vite build (client) + esbuild (server) -> dist/
 npm start        # NODE_ENV=production node dist/index.js
 npm run check    # tsc --noEmit - currently zero errors, keep it that way
+npm test         # cancellation tests; no DATABASE_URL or OpenAI key needed
 npm run db:push  # apply the Drizzle schema
 ```
 
@@ -61,6 +62,13 @@ a single custom post from a topic, or a sweep over recent news.
   out to the content, review, enhance and knowledge agents. Add new agents to
   that method. The web-search step is deliberately pinned to a search-enabled
   model and is not user-selectable.
+- **A cancelled job does no more work.** Each job runs with its own abort signal
+  (`server/ai-agents/jobContext.ts`). Agent requests take it through
+  `requestOptions()`, agent fallbacks call `rethrowIfCancelled()` first, and the
+  orchestrator calls `checkpoint()` before every step and every save. `cancelled`,
+  `completed` and `failed` are final: `updateJob` ignores later changes. Tests are
+  in `server/ai-agents/*.test.ts`, `server/jobRoutes.test.ts` and
+  `client/src/lib/job-status.test.ts`.
 - **`enhanceAgent` works only from `reviewAgent`'s feedback**, never its own
   opinions. That separation is why the output is worth reading; collapsing the
   two agents defeats the design.

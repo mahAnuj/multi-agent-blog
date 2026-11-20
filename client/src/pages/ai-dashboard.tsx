@@ -16,6 +16,15 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { createApiUrl } from "@/lib/config";
 import { authHeaders } from "@/lib/admin-token";
+import {
+  type JobStatus,
+  isRunning,
+  jobName,
+  cancelToast,
+  interpretCancelError,
+  successRate,
+  statusBadgeClass,
+} from "@/lib/job-status";
 import { 
   Play, 
   Square, 
@@ -34,16 +43,18 @@ import {
   FileText,
   Edit,
   Trash2,
-  Shield
+  Shield,
+  Ban
 } from "lucide-react";
 import { Link } from "wouter";
 
 interface GenerationJob {
   id: string;
-  status: 'pending' | 'fetching' | 'analyzing' | 'generating' | 'reviewing' | 'completed' | 'failed';
+  status: JobStatus;
   progress: number;
   startedAt: string;
   completedAt?: string;
+  cancelledAt?: string;
   error?: string;
   config: {
     hoursBack: number;
@@ -75,6 +86,7 @@ interface AIStats {
   totalJobs: number;
   completedJobs: number;
   failedJobs: number;
+  cancelledJobs?: number;
   averageArticlesPerJob: number;
   averageGenerationTime: number;
 }
@@ -180,24 +192,32 @@ export default function AIDashboard() {
     },
   });
 
+  // Jobs with a cancel request in flight: their button is disabled so a
+  // double click can't send a second request.
+  const [cancellingIds, setCancellingIds] = useState<ReadonlySet<string>>(new Set());
+
   const cancelJobMutation = useMutation({
-    mutationFn: async (jobId: string) => {
-      const response = await apiRequest("DELETE", `/api/ai/jobs/${jobId}`);
+    mutationFn: async (job: GenerationJob) => {
+      const response = await apiRequest("DELETE", `/api/ai/jobs/${job.id}`);
       return response.json();
     },
-    onSuccess: () => {
-      toast({
-        title: "Job Cancelled",
-        description: "The generation job has been cancelled.",
+    onMutate: (job) => {
+      setCancellingIds((ids) => new Set(ids).add(job.id));
+    },
+    onSuccess: (_data, job) => {
+      toast(cancelToast(job, { kind: "cancelled" }));
+    },
+    onError: (error, job) => {
+      toast(cancelToast(job, interpretCancelError(error)));
+    },
+    onSettled: (_data, _error, job) => {
+      setCancellingIds((ids) => {
+        const next = new Set(ids);
+        next.delete(job.id);
+        return next;
       });
       refetchJobs();
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Cancel Failed",
-        description: error.message || "Failed to cancel job",
-        variant: "destructive",
-      });
+      queryClient.invalidateQueries({ queryKey: ["/api/ai/stats"] });
     },
   });
 
@@ -227,8 +247,9 @@ export default function AIDashboard() {
     startGenerationMutation.mutate(generationConfig);
   };
 
-  const handleCancelJob = (jobId: string) => {
-    cancelJobMutation.mutate(jobId);
+  const handleCancelJob = (job: GenerationJob) => {
+    if (cancellingIds.has(job.id)) return;
+    cancelJobMutation.mutate(job);
   };
 
   const handlePreviewNews = () => {
@@ -252,25 +273,19 @@ export default function AIDashboard() {
     });
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed': return 'bg-green-500';
-      case 'failed': return 'bg-red-500';
-      case 'pending': return 'bg-gray-500';
-      default: return 'bg-blue-500';
-    }
-  };
+  const getStatusColor = (status: JobStatus) => statusBadgeClass(status);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'completed': return <CheckCircle className="h-4 w-4" />;
       case 'failed': return <XCircle className="h-4 w-4" />;
+      case 'cancelled': return <Ban className="h-4 w-4 text-amber-500" />;
       case 'pending': return <Clock className="h-4 w-4" />;
       default: return <RefreshCw className="h-4 w-4 animate-spin" />;
     }
   };
 
-  const runningJobs = jobs.filter(job => !['completed', 'failed'].includes(job.status));
+  const runningJobs = jobs.filter(isRunning);
   const latestJobs = jobs.slice(0, 5);
 
   return (
@@ -588,16 +603,17 @@ export default function AIDashboard() {
                         {getStatusIcon(job.status)}
                         <span className="font-medium capitalize">{job.status}</span>
                         <Badge variant="outline">
-                          {job.config.focusTopic || "General AI"}
+                          {jobName(job)}
                         </Badge>
                       </div>
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleCancelJob(job.id)}
+                        onClick={() => handleCancelJob(job)}
+                        disabled={cancellingIds.has(job.id)}
                       >
                         <Square className="h-4 w-4 mr-1" />
-                        Cancel
+                        {cancellingIds.has(job.id) ? "Cancelling…" : "Cancel"}
                       </Button>
                     </div>
                     <Progress value={job.progress} className="h-2" />
@@ -634,7 +650,7 @@ export default function AIDashboard() {
                           {getStatusIcon(job.status)}
                           <div>
                             <div className="font-medium">
-                              {job.config.focusTopic || "General AI News"}
+                              {jobName(job)}
                             </div>
                             <div className="text-sm text-gray-600 dark:text-gray-400">
                               {new Date(job.startedAt).toLocaleString()}
@@ -934,6 +950,11 @@ export default function AIDashboard() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">{stats.totalJobs}</div>
+                  {!!stats.cancelledJobs && (
+                    <p className="text-xs text-muted-foreground">
+                      {stats.cancelledJobs} cancelled (excluded from success rate)
+                    </p>
+                  )}
                 </CardContent>
               </Card>
               
@@ -944,9 +965,7 @@ export default function AIDashboard() {
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold">
-                    {stats.totalJobs > 0 
-                      ? Math.round((stats.completedJobs / stats.totalJobs) * 100)
-                      : 0}%
+                    {successRate(stats)}%
                   </div>
                 </CardContent>
               </Card>

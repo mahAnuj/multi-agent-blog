@@ -27,6 +27,7 @@ A local Postgres is enough; you do not need Neon to develop.
 
 ```bash
 npm run check    # tsc --noEmit, currently zero errors
+npm test         # must pass; needs no database or OpenAI key
 npm run build    # must succeed
 ```
 
@@ -34,7 +35,8 @@ npm run build    # must succeed
 fixing seven real bugs, including a missing import that broke the homepage and
 a schema mismatch that made publishing a post impossible.
 
-There is no test suite yet. Adding one would be a welcome contribution.
+The tests cover job cancellation so far (`npm test`, Node's built-in runner
+through tsx). Add new test files to the `test` script in `package.json`.
 
 ## Security rules
 
@@ -59,6 +61,12 @@ The pipeline lives in `server/ai-agents/`. Two things to preserve:
   generation pass reliably produced confident, shallow copy.
 - **Model choice is per run.** `orchestrator.applyModel()` distributes it. A new
   LLM-backed agent must be added there rather than hardcoding a model.
+
+- **Every agent request must stay cancellable.** Pass `requestOptions()` as the
+  second argument to `openai.chat.completions.create()` (and spread it into any
+  `fetch`), and start each `catch` that falls back to a default with
+  `rethrowIfCancelled(error)`. Both come from `server/ai-agents/jobContext.ts`.
+  A new pipeline step in the orchestrator goes after a `this.checkpoint(jobId)`.
 
 Prompt changes are hard to review from a diff. Please include a before/after
 sample of generated output in your pull request.

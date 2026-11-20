@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { NewsArticle } from './newsAgent.js';
 import type { KnowledgeContext } from './latestKnowledgeAgent.js';
 import { DEFAULT_MODEL, type ChatModel } from "./models.js";
+import { requestOptions, rethrowIfCancelled, pause } from "./jobContext.js";
 
 export interface GeneratedContent {
   title: string;
@@ -119,7 +120,7 @@ WRITING STYLE:
         response_format: { type: "json_object" },
         temperature: 0.7,
         max_tokens: 4000
-      });
+      }, requestOptions());
 
       const generated = JSON.parse(completion.choices[0].message.content || '{}');
 
@@ -147,6 +148,7 @@ WRITING STYLE:
       };
 
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error generating blog post:', error);
       throw new Error(`Failed to generate content: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -165,8 +167,9 @@ WRITING STYLE:
         posts.push(post);
         
         // Add delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await pause(1000);
       } catch (error) {
+        rethrowIfCancelled(error);
         console.error(`Failed to generate post for article: ${article.title}`, error);
         // Continue with other articles
       }
@@ -410,7 +413,7 @@ ${sources.map(source => `- **[${source.title}](${source.url})** - ${source.publi
           ],
           temperature: 0.3,
           max_tokens: 800
-        });
+        }, requestOptions());
 
         const codeContent = completion.choices[0].message.content?.trim();
         if (codeContent) {
@@ -425,6 +428,7 @@ ${sources.map(source => `- **[${source.title}](${source.url})** - ${source.publi
 
       return codeSamples;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error creating code samples:', error);
       return []; // Return empty array if code generation fails
     }
@@ -456,10 +460,11 @@ Format as natural search results with authoritative information.`
         ],
         temperature: 0.3,
         max_tokens: 800
-      });
+      }, requestOptions());
 
       return searchCompletion.choices[0]?.message?.content || `No current information found for: ${query}`;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error(`Web search failed for query "${query}":`, error);
       return `Unable to retrieve information for: ${query}`;
     }
@@ -525,10 +530,11 @@ ${context.authorativeSources.map(source =>
         ],
         temperature: 0.3,
         max_tokens: 1000
-      });
+      }, requestOptions());
 
       return researchCompletion.choices[0]?.message?.content || `Recent developments in ${topic} continue to evolve rapidly with significant advances in 2025...`;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error researching topic:', error);
       return `Recent developments in ${topic} continue to evolve rapidly with significant industry advances...`;
     }
@@ -564,6 +570,7 @@ ${context.authorativeSources.map(source =>
       }));
       
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error finding related content:', error);
       return [];
     }
@@ -598,6 +605,7 @@ ${context.authorativeSources.map(source =>
             const result = await this.webSearch(query);
             return `**Search: "${query}"**\n${result}\n\n`;
           } catch (error) {
+            rethrowIfCancelled(error);
             console.error(`Web search failed for query "${query}":`, error);
             return `**Search: "${query}"**\nNo current information found.\n\n`;
           }
@@ -606,6 +614,7 @@ ${context.authorativeSources.map(source =>
       
       return searchResults.join('');
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Web research failed:', error);
       return 'Unable to retrieve current web information for this topic.';
     }
@@ -901,7 +910,7 @@ CRITICAL REQUIREMENTS:
         temperature: 0.7,
         max_tokens: 8000,
         response_format: { type: "json_object" }
-      });
+      }, requestOptions());
 
       const responseContent = completion.choices[0]?.message?.content;
       if (!responseContent) {
@@ -928,6 +937,7 @@ CRITICAL REQUIREMENTS:
       return result;
 
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error generating custom blog post:', error);
       
       // Fallback: Create a basic blog post structure

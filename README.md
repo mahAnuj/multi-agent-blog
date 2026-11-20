@@ -48,6 +48,7 @@ Other scripts:
 npm run db:push   # apply the Drizzle schema
 npm run build     # vite build + esbuild the server into dist/
 npm run check     # typecheck
+npm test          # cancellation tests (no database or OpenAI key needed)
 ```
 
 ```bash
@@ -77,6 +78,21 @@ Both generation modes accept:
   into the title and opening paragraph; the rest inform headings and meta fields. The
   prompt explicitly instructs against keyword-stuffing.
 
+## Cancelling a job
+
+**Cancel** on the dashboard (or `DELETE /api/ai/jobs/:jobId`) stops a running job:
+
+- The job is marked `cancelled` at once, a status of its own: it is not shown as
+  failed and is left out of the success rate.
+- Its in-flight OpenAI requests and image checks are aborted, and the pipeline starts
+  no further step, drafts nothing more and saves no further post.
+- A post whose save was already under way when the cancel arrived is kept and listed
+  on the cancelled job.
+- A job that already finished can't be cancelled: the API answers `409` with its real
+  status, so a second click reports "already cancelled" rather than an error.
+- An OpenAI request that is aborted mid-flight may still be billed for the tokens it
+  had used.
+
 ## API
 
 Public reading:
@@ -96,7 +112,7 @@ Admin — all require a valid bearer token:
 | `POST` | `/api/ai/generate` | Run the pipeline over recent news |
 | `POST` | `/api/ai/generate-custom` | Generate one post from a topic, keywords and instructions |
 | `GET` | `/api/ai/jobs` | Inspect generation jobs |
-| `DELETE` | `/api/ai/jobs/:jobId` | Cancel a job |
+| `DELETE` | `/api/ai/jobs/:jobId` | Cancel a running job (`409` if it already finished) |
 | `GET` | `/api/ai/news` | Inspect fetched news articles |
 | `GET` | `/api/ai/stats` | Generation statistics |
 | `GET` | `/api/posts/drafts` | List unpublished drafts |

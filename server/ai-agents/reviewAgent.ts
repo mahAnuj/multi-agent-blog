@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { GeneratedContent } from './contentAgent.js';
 import { DEFAULT_MODEL, type ChatModel } from "./models.js";
+import { requestOptions, rethrowIfCancelled } from "./jobContext.js";
 
 export interface ReviewResult {
   approved: boolean;
@@ -95,6 +96,7 @@ export class ReviewAgent {
       return result;
 
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error during content review:', error);
       throw new Error(`Review failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
@@ -121,11 +123,12 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
         temperature: 0.1
-      });
+      }, requestOptions());
 
       const result = JSON.parse(response.choices[0].message.content || '{"issues": []}');
       return result.issues || [];
     } catch (error) {
+      rethrowIfCancelled(error);
       console.warn('Factual accuracy check failed:', error);
       return [];
     }
@@ -314,7 +317,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
       // Check if featured image URL is valid
       if (content.featuredImage) {
         try {
-          const response = await fetch(content.featuredImage, { method: 'HEAD' });
+          const response = await fetch(content.featuredImage, { method: 'HEAD', ...requestOptions() });
           if (!response.ok) {
             issues.push({
               type: 'image_error',
@@ -325,6 +328,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
             });
           }
         } catch (error) {
+          rethrowIfCancelled(error);
           issues.push({
             type: 'image_error',
             severity: 'high',
@@ -341,7 +345,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
       while ((match = imageRegex.exec(content.content)) !== null) {
         const imageUrl = match[2];
         try {
-          const response = await fetch(imageUrl, { method: 'HEAD' });
+          const response = await fetch(imageUrl, { method: 'HEAD', ...requestOptions() });
           if (!response.ok) {
             issues.push({
               type: 'image_error',
@@ -352,6 +356,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
             });
           }
         } catch (error) {
+          rethrowIfCancelled(error);
           issues.push({
             type: 'image_error',
             severity: 'medium',
@@ -398,6 +403,7 @@ Respond with JSON array of issues: [{"type": "factual_error|hallucination", "sev
       }
 
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error checking styling issues:', error);
     }
 
@@ -452,7 +458,7 @@ Rate both uniqueness AND storytelling flow on separate 1-10 scales.`;
         ],
         temperature: 0.3,
         max_tokens: 800
-      });
+      }, requestOptions());
 
       const response = completion.choices[0]?.message?.content || '';
       const issues: ReviewIssue[] = [];
@@ -540,6 +546,7 @@ Rate both uniqueness AND storytelling flow on separate 1-10 scales.`;
 
       return issues;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error assessing content uniqueness:', error);
       return [];
     }
@@ -580,7 +587,7 @@ Rate the reader value on a scale of 1-10 and explain what would make it more val
         ],
         temperature: 0.3,
         max_tokens: 800
-      });
+      }, requestOptions());
 
       const response = completion.choices[0]?.message?.content || '';
       const issues: ReviewIssue[] = [];
@@ -615,6 +622,7 @@ Rate the reader value on a scale of 1-10 and explain what would make it more val
 
       return issues;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error assessing reader value:', error);
       return [];
     }
@@ -671,13 +679,14 @@ Be critical and thorough - if the content doesn't adequately address the origina
         response_format: { type: "json_object" },
         temperature: 0.1,
         max_tokens: 1000
-      });
+      }, requestOptions());
 
       const result = JSON.parse(completion.choices[0].message.content || '{"issues": []}');
       console.log(`Topic coverage check completed: ${result.issues?.length || 0} issues found`);
       
       return result.issues || [];
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error checking topic coverage:', error);
       return [];
     }

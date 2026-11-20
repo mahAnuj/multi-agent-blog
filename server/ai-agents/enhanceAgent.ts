@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { GeneratedContent } from './contentAgent.js';
 import type { ReviewResult } from './reviewAgent.js';
 import { DEFAULT_MODEL, type ChatModel } from "./models.js";
+import { requestOptions, rethrowIfCancelled } from "./jobContext.js";
 
 export interface EnhancementResult {
   enhancedContent: GeneratedContent;
@@ -70,7 +71,7 @@ Return a JSON object with this exact structure:
         temperature: 0.7,
         max_tokens: 4000,
         response_format: { type: "json_object" }
-      });
+      }, requestOptions());
 
       const responseContent = completion.choices[0]?.message?.content;
       if (!responseContent) {
@@ -106,6 +107,7 @@ Return a JSON object with this exact structure:
       };
 
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error('Error enhancing content:', error);
       
       // Return original content with minimal improvements if enhancement fails

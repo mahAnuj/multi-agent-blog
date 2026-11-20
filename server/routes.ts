@@ -15,6 +15,7 @@ import {
   isAdminConfigured,
 } from "./auth.js";
 import { AIOrchestrator } from "./ai-agents/orchestrator.js";
+import { registerJobRoutes } from "./jobRoutes.js";
 import { NewsAgent } from "./ai-agents/newsAgent.js";
 import { ContentAgent } from "./ai-agents/contentAgent.js";
 import { ReviewAgent } from "./ai-agents/reviewAgent.js";
@@ -302,61 +303,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get generation job status
-  app.get("/api/ai/jobs/:jobId", requireAdmin, async (req, res) => {
-    try {
-      const { jobId } = req.params;
-      const job = aiOrchestrator.getJobStatus(jobId);
-      
-      if (!job) {
-        return res.status(404).json({ error: "Job not found" });
-      }
-      
-      res.json(job);
-    } catch (error) {
-      console.error("Error fetching job status:", error);
-      res.status(500).json({ error: "Failed to fetch job status" });
-    }
-  });
-
-  // Get all jobs (admin dashboard)
-  app.get("/api/ai/jobs", requireAdmin, async (req, res) => {
-    try {
-      const jobs = aiOrchestrator.getAllJobs();
-      res.json(jobs);
-    } catch (error) {
-      console.error("Error fetching jobs:", error);
-      res.status(500).json({ error: "Failed to fetch jobs" });
-    }
-  });
-
-  // Cancel a generation job
-  app.delete("/api/ai/jobs/:jobId", requireAdmin, async (req, res) => {
-    try {
-      const { jobId } = req.params;
-      const cancelled = aiOrchestrator.cancelJob(jobId);
-      
-      if (!cancelled) {
-        return res.status(404).json({ error: "Job not found or cannot be cancelled" });
-      }
-      
-      res.json({ status: "cancelled" });
-    } catch (error) {
-      console.error("Error cancelling job:", error);
-      res.status(500).json({ error: "Failed to cancel job" });
-    }
-  });
-
-  // Get AI generation statistics
-  app.get("/api/ai/stats", requireAdmin, async (req, res) => {
-    try {
-      const stats = aiOrchestrator.getStats();
-      res.json(stats);
-    } catch (error) {
-      console.error("Error fetching AI stats:", error);
-      res.status(500).json({ error: "Failed to fetch statistics" });
-    }
-  });
+  registerJobRoutes(app, aiOrchestrator, requireAdmin);
 
   // Preview news articles (for manual review)
   app.get("/api/ai/news", requireAdmin, async (req, res) => {

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { DEFAULT_MODEL, SEARCH_MODEL, type ChatModel } from "./models.js";
+import { requestOptions, rethrowIfCancelled } from "./jobContext.js";
 
 export interface KnowledgeContext {
   topic: string;
@@ -47,6 +48,7 @@ export class LatestKnowledgeAgent {
       console.log(`✅ Knowledge gathering completed for: ${topic}`);
       return knowledgeContext;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error("Error gathering latest knowledge:", error);
       // Return basic context if web search fails
       return {
@@ -91,7 +93,7 @@ export class LatestKnowledgeAgent {
       ],
       temperature: 0.3,
       max_tokens: 400,
-    });
+    }, requestOptions());
 
     const queriesText = completion.choices[0].message.content?.trim() || "";
     return queriesText
@@ -111,6 +113,7 @@ export class LatestKnowledgeAgent {
         console.log(`✓ Completed search for: ${query.substring(0, 50)}...`);
         return { query, results };
       } catch (error) {
+        rethrowIfCancelled(error);
         console.error(`✗ Search failed for: ${query}`, error);
         return { query, results: `Search failed for: ${query}` };
       }
@@ -177,7 +180,7 @@ export class LatestKnowledgeAgent {
       response_format: { type: "json_object" },
       temperature: 0.2,
       max_tokens: 2000,
-    });
+    }, requestOptions());
 
     try {
       const synthesized = JSON.parse(
@@ -201,6 +204,7 @@ export class LatestKnowledgeAgent {
         practicalApplications: synthesized.practicalApplications || "",
       };
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error("Error parsing synthesized knowledge:", error);
       return {
         topic,
@@ -243,10 +247,11 @@ Focus on factual, verifiable information with source attribution when possible.`
           ],
           temperature: 0.2,
           max_tokens: 1500
-        });
+        }, requestOptions());
         
         console.log(`✅ OpenAI search model used for: ${query.substring(0, 50)}...`);
       } catch (searchModelError) {
+        rethrowIfCancelled(searchModelError);
         console.log(`ℹ️ Search model not available, using enhanced gpt-4o with current knowledge...`);
         
         // Fallback to regular gpt-4o with enhanced knowledge about current AI protocols
@@ -282,7 +287,7 @@ Focus on factual, accurate information about these legitimate technologies.`
           ],
           temperature: 0.2,
           max_tokens: 1500
-        });
+        }, requestOptions());
       }
 
       const results = searchCompletion.choices[0]?.message?.content || 
@@ -291,6 +296,7 @@ Focus on factual, accurate information about these legitimate technologies.`
       console.log(`✅ Web search completed for: ${query.substring(0, 50)}...`);
       return results;
     } catch (error) {
+      rethrowIfCancelled(error);
       console.error(`Web search failed for query "${query}":`, error);
       return `Search temporarily unavailable for: ${query}. Using base knowledge: This is a legitimate AI technology with current development and adoption.`;
     }
