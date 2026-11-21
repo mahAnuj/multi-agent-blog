@@ -11,7 +11,10 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
+    const appPort = process.env.PORT || '5000';
     const allowedOrigins = [
+      `http://localhost:${appPort}`,  // The app's own pages (same origin)
+      `http://127.0.0.1:${appPort}`,
       'http://localhost:3000',    // Local full-stack development
       'http://localhost:5173',    // Vite dev server (when calling EC2)
       'http://localhost:4173',    // Vite preview
