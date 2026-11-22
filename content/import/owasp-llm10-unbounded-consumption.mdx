@@ -1,0 +1,353 @@
+---
+title: "LLM10: Unbounded Consumption and denial of wallet, explained"
+description: "Without limits, anyone can crash your AI service, run up your model bill or copy your model. Four real unbounded consumption cases and limits that help."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 10
+---
+
+In May 2024
+[Sysdig's threat research team](https://sysdig.com/blog/llmjacking-stolen-cloud-credentials-used-in-new-ai-attack/)
+watched attackers use cloud keys
+stolen from an unpatched web app to reach Amazon's hosted models. They checked
+which AI services the keys could reach, looked at whether prompt logging was
+switched on, and left signs that they meant to resell the access.
+Sysdig estimated the worst case for the account owner at $46,080 a day.
+
+A normal web request costs a fraction of a cent to serve. A model call can
+cost real money and seconds of GPU time, and an attacker can choose to make it
+as expensive as possible. **An AI endpoint without limits is a meter running on
+your card, and anyone who can reach it can lean on it.** For a startup on
+pay-per-token pricing, a bad weekend can mean an outage, a bill bigger than
+the runway allows, or both.
+
+*Unbounded consumption* (OWASP LLM10) is any way a caller, legitimate or not,
+can make an LLM application use far more compute, money or model output than it
+should. The control that matters most is a limit per user and per key, counted
+in tokens as well as requests, backed by a hard spend cap at the provider.
+
+This is part 10, the last item in a series walking through the
+[OWASP Top 10 for LLM applications](/blog/owasp-llm-top-10), one risk at a
+time, with real incidents and controls a small team can apply.
+
+## What is unbounded consumption?
+
+OWASP's *Unbounded Consumption* entry grows out of the previous edition's
+denial-of-service entry and widens it to cost and model theft. Three outcomes
+matter:
+
+- **Denial of service.** A
+  [denial-of-service attack](https://www.cisa.gov/news-events/news/understanding-denial-service-attacks)
+  stops legitimate users reaching a system, usually by overwhelming it. A
+  distributed one (DDoS) uses many machines at once, which makes it harder to
+  block. LLM services are unusually easy to overwhelm, because each request
+  is heavy.
+- **Denial of wallet.** On pay-per-use pricing, the service stays up but the
+  bill grows until it becomes unaffordable. Models are billed in *tokens*,
+  roughly word fragments, counted on both input and output, so long prompts
+  and long answers both cost more. Attackers do not need to take you offline
+  to hurt you; they only need to keep you paying.
+- **Model extraction.** Enough answers from a model can be used to train a
+  copy of it. The technique,
+  [knowledge distillation](https://en.wikipedia.org/wiki/Knowledge_distillation),
+  is normal and legitimate inside one lab. Done against someone else's API at
+  scale, it copies capabilities that cost a great deal to build.
+
+The weakness underneath all three is the same as in
+[OWASP's API Security entry API4:2023](https://api-security.owasp.org/editions/2023/en/0xa4-unrestricted-resource-consumption):
+no effective limit on request size, rate or spend.
+[Rate limiting](https://en.wikipedia.org/wiki/Rate_limiting), capping how
+much traffic a caller can send in a period, is the first tool, and on its own
+it is not enough.
+
+## How do denial-of-service and denial-of-wallet attacks work?
+
+- **Oversized requests.** Very long prompts, huge documents, or requests that
+  ask for the maximum possible output. Each one ties up memory and GPU time.
+  Sometimes the weak point is not the model at all but the HTTP layer in front
+  of it, as the vLLM case below shows.
+- **Floods.** Many requests from many sources, so that real users are queued
+  or dropped. Shared model infrastructure means one flood can hit every
+  customer.
+- **Bill bombing.** Sustained, expensive usage on a victim's account. This is
+  often done with stolen credentials rather than through your front door:
+  someone takes a cloud key or a model provider's
+  [API key](https://en.wikipedia.org/wiki/Application_programming_interface_key)
+  and spends it on their own work, or resells it.
+- **Expensive queries.** Prompts designed to maximise computation per call,
+  such as long chains of reasoning, many tool calls in a loop, or repeated
+  retrieval over large indexes. Unchecked tool loops are also an
+  [excessive agency](/blog/owasp-llm06-excessive-agency) problem.
+- **Extraction through volume.** Large numbers of queries chosen to cover a
+  model's capabilities, spread across many accounts so that no single account
+  trips a limit.
+
+## Real incidents: outages, LLMjacking and distillation
+
+### vLLM CVE-2025-48956: one oversized header could take the server down
+
+**Researcher disclosure** · disclosed August 2025
+
+**How it happened.** vLLM is an open-source server for running
+LLMs behind an HTTP API. Its maintainers published advisory GHSA-rxc4-3w6r-4v47
+on 20 August 2025, tracked as
+[CVE](https://en.wikipedia.org/wiki/Common_Vulnerabilities_and_Exposures)-2025-48956
+(a CVE is the public ID assigned to a disclosed software flaw).
+
+1. From version 0.1.0 until the fix, vLLM did not enforce limits on HTTP
+   header size.
+2. An attacker sends a single GET request with an enormous header; the
+   advisory's example uses `X-Forwarded-For`.
+3. The server's HTTP parser or application logic may try to load the whole
+   request into memory, exhausting it.
+4. The server crashes or stops responding. No authentication or user
+   interaction is needed.
+5. vLLM 0.10.1.1 enables HTTP limits by default. The advisory also suggests a
+   proxy in front of vLLM that protects against oversized requests.
+
+**Who was affected.** Anyone running vLLM from 0.1.0 up to, but not including,
+0.10.1.1 with its HTTP server reachable by untrusted clients. The advisory
+does not report exploitation in the wild.
+
+**What was exposed.** Availability only. The advisory rates it High, CVSS 3.1
+score 7.5, with no confidentiality or integrity impact, and classifies it as
+CWE-400, uncontrolled resource consumption.
+
+**Lessons.** This was not a clever prompt. It was the oldest kind of resource
+bug, sitting in front of an expensive model. Limit the size of every part of a
+request (headers, body, prompt length, requested output), not only the prompt,
+and do not expose model servers directly to the internet. A gateway in front
+that enforces size limits and authentication would have absorbed this.
+
+**Source:** [vLLM security advisory GHSA-rxc4-3w6r-4v47 (CVE-2025-48956)](https://github.com/vllm-project/vllm/security/advisories/GHSA-rxc4-3w6r-4v47)
+
+### ChatGPT and API outages from a DDoS attack claimed by Anonymous Sudan
+
+**Real-world incident** · happened November 2023
+
+**How it happened.**
+
+1. OpenAI's status page opened an incident titled "Periodic outages across
+   ChatGPT and API" and later attributed the outages to "an abnormal traffic
+   pattern reflective of a DDoS attack", saying mitigation work was ongoing.
+2. The group Anonymous Sudan claimed responsibility. According to a US federal
+   indictment filed in October 2024, a co-conspirator posted on Telegram that
+   Anonymous Sudan had attacked ChatGPT and that some functions had stopped
+   working, and another post called the ChatGPT link "completely dead now
+   worldwide".
+3. The same indictment alleges that from 7 to 8 November 2023 the group
+   conducted DDoS attacks from its own server against servers controlled by
+   OpenAI, "causing significant disruption" to ChatGPT.
+4. OpenAI later marked the incident resolved, with services back to normal.
+
+**Who was affected.** ChatGPT users and businesses building on the OpenAI API
+during the outage window. OpenAI's updates give no user numbers. The
+indictment names two Sudanese nationals; an indictment is an accusation, not a
+finding of guilt.
+
+**What was exposed.** Availability. Legitimate users intermittently lost access
+to ChatGPT and the API. None of the sources reviewed describes data being
+accessed.
+
+**Lessons.** If one of the best-resourced AI companies can be knocked over
+intermittently by a flood, a small team's endpoint can too. Rate-limit and
+authenticate at the edge, before requests reach expensive model servers. And
+if your product depends on a single model provider, its outage is your
+outage: decide in advance what your app does when the provider is
+unavailable.
+
+**Source:** [OpenAI status page, Periodic outages across ChatGPT and API](https://status.openai.com/incidents/21vl32gvx3hb) ·
+[US v. Ahmed Salah Yousif Omer et al., indictment, C.D. Cal. No. 2:24-cr-00614](https://www.justice.gov/usao-cdca/media/1373581/dl)
+
+### LLMjacking: stolen cloud credentials used to run hosted models on the victim's bill
+
+**Real-world incident** · disclosed May 2024
+
+**How it happened.** Sysdig's Threat Research Team described an attack it
+observed and named it LLMjacking.
+
+1. Attackers exploited a known Laravel vulnerability, CVE-2021-3129, on a
+   system running a vulnerable version, and stole cloud credentials from it.
+2. The credentials reached an AWS account with
+   [Amazon Bedrock](https://aws.amazon.com/bedrock/), Amazon's hosted model
+   service.
+3. To test access without running real prompts, they sent an `InvokeModel`
+   request with `max_tokens_to_sample` set to -1. A validation error, rather
+   than "access denied", told them the key could reach the model.
+4. A script tested stolen credentials against ten AI services, including
+   Anthropic, AWS Bedrock, Azure, GCP Vertex AI, Mistral and OpenAI.
+5. They queried the account's model invocation logging configuration, which
+   Sysdig reads as an attempt to avoid detection during later use.
+6. Sysdig saw a user agent matching OAI Reverse Proxy, software that would let
+   attackers sell access to many compromised accounts centrally.
+
+**Who was affected.** Organisations whose cloud credentials were stolen. The
+write-up describes one observed attack and gives no victim count.
+
+**What was exposed.** The victim's cloud account and its bill. Sysdig estimated
+up to $46,080 per day, assuming Claude 2.x quota limits were reached in four
+regions for 24 hours. That is a worst-case estimate, not a reported loss.
+
+**Lessons.** The attack did not touch the model's safety at all. It started
+with an old, ordinary web vulnerability and ended at the billing page. Patch
+internet-facing apps, keep cloud keys out of plaintext, and give each workload
+only the model permissions it needs. Note that Bedrock's
+[model invocation logging](https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html),
+which records prompts and responses, is disabled by default. If it is off,
+you will see the bill before you see what was run.
+
+**Source:** [Sysdig Threat Research Team, LLMjacking: Stolen Cloud Credentials Used in New AI Attack](https://sysdig.com/blog/llmjacking-stolen-cloud-credentials-used-in-new-ai-attack/)
+
+### Anthropic alleges industrial-scale distillation of Claude by three AI labs
+
+**Vendor allegation** · disclosed February 2026
+
+**How it happened.** On 23 February 2026 Anthropic published a post alleging
+that three AI labs ran large distillation campaigns against Claude.
+Everything below is Anthropic's account, based on its own evidence.
+
+1. According to Anthropic, it does not offer commercial access to Claude in
+   China, and the campaigns violated its terms of service and regional access
+   restrictions.
+2. Anthropic says the labs used commercial proxy services that resell model
+   access through large networks of fraudulent accounts across its API and
+   third-party cloud platforms. In one case, it says, a single proxy network
+   ran more than 20,000 fraudulent accounts at once and mixed distillation
+   traffic with unrelated customer requests.
+3. Anthropic reports over 16 million exchanges through about 24,000
+   fraudulent accounts, aimed at capabilities such as agentic reasoning, tool
+   use, coding and step-by-step reasoning.
+4. It attributes the campaigns to DeepSeek (over 150,000 exchanges), Moonshot
+   AI (over 3.4 million) and MiniMax (over 13 million), citing IP address
+   correlation, request metadata, infrastructure indicators and corroboration
+   from industry partners.
+5. Anthropic says MiniMax redirected nearly half its traffic within 24 hours
+   of a new Claude release.
+
+**Who was affected.** Anthropic, as the model provider. End users are not
+described as harmed. The post does not include responses from the named labs,
+and the allegations have not been tested in any public forum covered here.
+
+**What was exposed.** According to Anthropic, capabilities that are expensive
+to build, harvested through API calls designed to look ordinary.
+
+**What happened next.** Anthropic says it built classifiers and behavioural
+fingerprinting to spot distillation patterns, including tools to find
+coordinated activity across many accounts; tightened verification for
+account types it says were commonly abused (educational, security research
+and startup accounts); and shared technical indicators with other labs, cloud
+providers and authorities.
+
+**Lessons.** Whatever the merits of the specific allegations, the mechanics
+apply to anyone selling model access, including a startup with a fine-tuned
+model. Per-account rate limits do little against 20,000 cheap accounts.
+Detection has to look across accounts for shared infrastructure, payment
+methods and timing, and sign-up checks matter as much as usage limits.
+
+**Source:** [Anthropic, Detecting and preventing distillation attacks (23 February 2026)](https://www.anthropic.com/news/detecting-and-preventing-distillation-attacks)
+
+## How can a small team limit LLM consumption?
+
+These reduce how much damage one caller, one stolen key or one bad night can
+do. None of them makes an endpoint impossible to abuse.
+
+1. **Limit per user and per key, in requests and in tokens.** Count both
+   requests per minute and tokens per minute or day for each authenticated
+   user and each API key, and reject or queue anything over. Providers do the
+   same to you: OpenAI's
+   [rate limits](https://developers.openai.com/api/docs/guides/rate-limits)
+   are measured in requests and tokens per minute and per day. Per-IP limits
+   alone are weak, because addresses are cheap and headers like
+   `X-Forwarded-For` can be spoofed if you trust them blindly. The audit in
+   [Governance theatre](/blog/governance-theatre-ai-support-bot) records that
+   exact gap in the per-IP limit it added.
+2. **Cap request size at every layer.** Maximum header size, body size,
+   upload size, prompt length in tokens and requested output tokens. Set
+   explicit timeouts on model calls. Put a gateway or reverse proxy in front of
+   any self-hosted model server so it rejects oversized requests before they
+   reach the GPU.
+3. **Set spend alerts and hard budget caps at the provider.** Most providers
+   offer both, and they behave differently. On OpenAI, a spend alert notifies
+   you and traffic continues, while a hard spend limit makes requests fail
+   ([OpenAI rate limits](https://developers.openai.com/api/docs/guides/rate-limits)). On
+   AWS, [AWS Budgets](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html)
+   can alert on actual or forecast spend and trigger actions such as applying
+   a restrictive IAM policy. AWS notes that budget data updates up to three
+   times a day and that charges can exceed a threshold before you are
+   notified, so set alerts well below the number that would hurt.
+4. **Rotate and scope keys.** Use a separate key per environment and per
+   service, with only the models and permissions it needs, so one leak does
+   not open everything. Keep keys in a secrets manager, never in client code or
+   a repository, and rotate on a schedule and immediately after any suspected
+   exposure.
+5. **Monitor for abnormal query patterns.** Turn on prompt and usage logging
+   where your provider offers it. Alert on sudden jumps in tokens per user, new
+   models or regions being called, calls at odd hours, many new accounts
+   sharing a payment method or address range, and reconnaissance-style calls
+   like the invalid-parameter probe in the LLMjacking case.
+6. **Patch the boring parts.** Keep serving frameworks such as vLLM current,
+   and patch internet-facing apps that hold cloud credentials. The vLLM and
+   LLMjacking cases both started with a conventional bug.
+7. **Degrade on purpose.** Decide what happens when limits are hit or the
+   provider is down: a queue, a smaller cheaper model, a cached answer, a clear
+   error. A planned fallback is better than an outage that also burns budget
+   on retries. A cache bounds cost best when its key matches the question
+   rather than the request:
+   [Bounding a billed API with the shape of its cache key](/blog/bounding-a-billed-api-with-a-cache-key)
+   shows a public endpoint in front of a metered API whose bill grows with
+   distinct questions, not traffic.
+8. **Make sign-up harder to farm.** If you sell model access, add friction to
+   account creation (email and payment verification, limits on free tiers) and
+   watch for clusters of accounts behaving alike.
+
+If you are about to put a pay-per-token endpoint in front of the public,
+[I can review](/contact) its limits, keys and spend caps before launch.
+
+## FAQ
+
+**What is denial of wallet?** An attack where the service stays up but the
+bill grows until it becomes unaffordable. Models are billed per token on both
+input and output, so an attacker only needs to keep you paying.
+
+**How much can a stolen model key cost?** In the LLMjacking case, Sysdig
+estimated a worst case of $46,080 per day for the account owner, assuming
+Claude 2.x quota limits were reached in four regions for 24 hours, according to
+[Sysdig](https://sysdig.com/blog/llmjacking-stolen-cloud-credentials-used-in-new-ai-attack/).
+That is an estimate, not a reported loss.
+
+**Are per-IP rate limits enough?** No. Addresses are cheap, and headers like
+`X-Forwarded-For` can be spoofed if you trust them blindly. Limit per
+authenticated user and per key, in requests and tokens.
+
+**Will a budget alert stop the charges in time?** Not on its own. AWS notes
+that budget data updates up to three times a day and that charges can exceed a
+threshold before you are notified, according to
+[AWS Budgets documentation](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html).
+Set alerts well below the number that would hurt, and use hard caps where the
+provider offers them.
+
+## References
+
+- [OWASP, LLM10:2025 Unbounded Consumption](https://genai.owasp.org/llmrisk/llm102025-unbounded-consumption/)
+- [vLLM security advisory GHSA-rxc4-3w6r-4v47 (CVE-2025-48956)](https://github.com/vllm-project/vllm/security/advisories/GHSA-rxc4-3w6r-4v47)
+- [OpenAI status page, Periodic outages across ChatGPT and API (November 2023)](https://status.openai.com/incidents/21vl32gvx3hb)
+- [US v. Ahmed Salah Yousif Omer et al., indictment, C.D. Cal. No. 2:24-cr-00614](https://www.justice.gov/usao-cdca/media/1373581/dl)
+- [Sysdig Threat Research Team, LLMjacking: Stolen Cloud Credentials Used in New AI Attack (6 May 2024)](https://sysdig.com/blog/llmjacking-stolen-cloud-credentials-used-in-new-ai-attack/)
+- [Anthropic, Detecting and preventing distillation attacks (23 February 2026)](https://www.anthropic.com/news/detecting-and-preventing-distillation-attacks)
+- [OWASP API Security Top 10, API4:2023 Unrestricted Resource Consumption](https://api-security.owasp.org/editions/2023/en/0xa4-unrestricted-resource-consumption)
+- [CISA, Understanding Denial-of-Service Attacks](https://www.cisa.gov/news-events/news/understanding-denial-service-attacks)
+- [OpenAI API docs, Rate limits](https://developers.openai.com/api/docs/guides/rate-limits)
+- [AWS, Managing your costs with AWS Budgets](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html)
+- [AWS, Amazon Bedrock model invocation logging](https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html)
+- [Amazon Bedrock](https://aws.amazon.com/bedrock/)
+- [Wikipedia, Knowledge distillation](https://en.wikipedia.org/wiki/Knowledge_distillation)
+- [Wikipedia, Rate limiting](https://en.wikipedia.org/wiki/Rate_limiting)
+- [Wikipedia, Common Vulnerabilities and Exposures](https://en.wikipedia.org/wiki/Common_Vulnerabilities_and_Exposures)
+- [Wikipedia, API key](https://en.wikipedia.org/wiki/Application_programming_interface_key)
+- [Governance theatre: auditing an AI support bot](/blog/governance-theatre-ai-support-bot)
+- [Bounding a billed API with the shape of its cache key](/blog/bounding-a-billed-api-with-a-cache-key)
+- Series hub: [OWASP Top 10 for LLM applications, explained with real incidents](/blog/owasp-llm-top-10)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/) ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent commentary, not endorsed by OWASP.

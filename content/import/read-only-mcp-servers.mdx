@@ -1,0 +1,169 @@
+---
+title: "Read-only by default: how mcp-multi-db enforces it"
+description: "A walk through the two layers that make an MCP server safe to point at a real database — a SQL-text guard that is allowed to be imperfect, and a connection that cannot write."
+date: 2026-08-24
+tags: ["mcp", "agents", "architecture"]
+---
+
+*Update, 2026-11-02: v1.1 adds opt-in governance on top of these two layers:
+table policy from the query plan, redaction by column origin, row limits and an
+audit log. [That post](/blog/governing-an-mcp-database-server) also covers the
+two bypasses an adversarial review found before release.*
+
+`mcp-multi-db` connects an AI agent to PostgreSQL, MySQL and SQLite through one
+server. Pointing something like that at real data only makes sense if writes
+are impossible rather than discouraged, so read-only enforcement is the part of
+the design worth writing down.
+
+It is enforced twice, and the interesting part is that **the two layers are not
+doing the same job.** One produces good errors. The other is the boundary.
+
+## Why a tool description is not enough
+
+The obvious way to build this is to wrap the database client you already have
+and tell the model to behave — put *only issue SELECT statements* in the tool
+description and move on.
+
+That fails for a reason worth being precise about. A tool description is an
+input to a probabilistic system. It shifts the distribution of outputs; it does
+not constrain the set of them. Treating it as an access control is the same
+category error as validating a form only in the browser.
+
+It also fails quietly. The model will comply almost every time, so the logs
+look clean for weeks. What that measures is the common case, not the boundary.
+
+## Layer 1: the SQL-text guard
+
+`validateReadOnlySql` runs before anything reaches a database. It does four
+things, in order:
+
+<ArchDiagram
+  title="validateReadOnly.ts"
+  stages={[
+    { name: "Reject multiple statements", detail: "One trailing semicolon is stripped; any remaining semicolon fails", meta: "Blocks stacked queries" },
+    { name: "Allowlist the opening keyword", detail: "Only SELECT, WITH and EXPLAIN may start a query", meta: "Allowlist, not denylist" },
+    { name: "Denylist mutating keywords", detail: "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, CALL, COPY and more", meta: "Belt to the allowlist's braces" },
+    { name: "Inject or clamp a LIMIT", detail: "Adds LIMIT 100 when absent; clamps an existing one to 1000", meta: "Bounded results", emphasis: true },
+  ]}
+  caption="Order matters: statement splitting is checked before the opening keyword, because a stacked query would otherwise pass the allowlist on its first statement alone."
+/>
+
+The opening check is an **allowlist** — `SELECT`, `WITH`, `EXPLAIN`, nothing
+else. That is the load-bearing half. The keyword denylist that follows is the
+belt to its braces: it catches mutations hiding later in an otherwise
+well-formed read, such as a CTE that writes.
+
+`EXPLAIN` returns early without a `LIMIT`, because appending one to a query
+plan is meaningless.
+
+## The guard is a regex, and that is fine
+
+Layer 1 is string matching, and string matching against SQL is famously leaky.
+A regex cannot see that a keyword sits inside a string literal, so a perfectly
+legitimate query gets rejected:
+
+```sql title="Rejected — a false positive the design accepts"
+SELECT id FROM tickets WHERE body LIKE '%DELETE ME%';
+```
+
+That is a real limitation, and it is the correct trade **only because layer 1
+is not the security boundary.** If it were, every gap in the pattern would be an
+exploit, and false negatives — the ones you never notice — would matter far
+more than false positives. Because it isn't, the guard can be deliberately
+conservative: it fails loudly and early with a readable error, and the cost of
+being wrong is an inconvenienced query rather than a mutated table.
+
+<Callout type="insight">
+A filter you can bypass is not a boundary. A filter sitting in front of a real
+boundary is a good error message. The same regex is a liability in the first
+role and an asset in the second — what changes is what stands behind it.
+</Callout>
+
+## Layer 2: the database refuses
+
+The guarantee comes from the connection, not the code above it. Each adapter
+prevents writes at the engine:
+
+| Engine | Mechanism |
+| --- | --- |
+| PostgreSQL | Query runs inside `BEGIN READ ONLY`, always rolled back |
+| MySQL | Query runs inside `START TRANSACTION READ ONLY`, always rolled back |
+| SQLite | Connection opened with `readonly: true` and `fileMustExist: true` |
+
+The case that motivates this is the one layer 1 structurally cannot catch: a
+`SELECT` that calls a function with side effects. Nothing in the statement text
+is a mutating keyword — the write happens inside the function body. The text
+guard sees a clean read; the read-only transaction refuses it anyway.
+
+This is why `SECURITY.md` states it plainly: a string-based filter alone is not
+a security boundary, and layer 2 is what makes the read-only guarantee real.
+**Enforcement lives in code I did not write and cannot accidentally weaken.**
+
+The rollback is unconditional rather than reserved for errors, so no
+transaction state survives a query either way.
+
+## Bounded by default
+
+Two limits stop a single query becoming an incident.
+
+Row count is capped in layer 1: `LIMIT 100` by default, clamped to a maximum of
+1000, injected when the model omits one and lowered when the model asks for
+more. The result carries a `truncated` flag, so the agent knows it is looking at
+a prefix and can narrow the query rather than confidently summarising the first
+hundred rows as though they were all of them.
+
+Statement timeouts are set per connection at 30 seconds on PostgreSQL and
+MySQL. Without one, a query that hangs past the client's transport timeout
+looks to the agent like a dead server rather than a slow query.
+
+<Callout type="warning">
+A tool that silently returns partial data is worse than one that fails. The
+model cannot tell the difference, so it will present the prefix as the answer.
+Truncation has to be reported in the response, not just applied.
+</Callout>
+
+## Four tools, not one
+
+The server exposes a graded surface rather than a single `query` escape hatch:
+
+| Tool | Returns |
+| --- | --- |
+| `list_databases` | Configured connections — id, type, label, description |
+| `list_tables` | Tables and views in one database |
+| `describe_table` | Columns for one table |
+| `run_query` | A read-only `SELECT` / `WITH` / `EXPLAIN` |
+
+The first three exist so the agent can discover structure before writing SQL,
+and `list_databases` is documented as the call to make first — every other tool
+needs a `database_id` to target, since multiple engines are live at once.
+
+The narrower tools also answer most questions on their own. A schema question
+routed to `describe_table` needs no SQL and cannot fail a validation check.
+
+## What is left to the operator
+
+Two layers of enforcement still leave decisions outside the server's control,
+and `SECURITY.md` names them rather than implying the defaults are sufficient:
+
+- **A dedicated database user with `GRANT SELECT` only.** This is the strongest
+  control available, and it is the one that holds even if a bug slips past both
+  layers. It is a recommendation rather than a feature because the server cannot
+  provision it for you.
+- **Point at a read replica** rather than a primary where the option exists.
+- **Scope what you connect.** The agent can read every table its configured
+  user can see; the server bounds what can be *done*, not what can be *seen*.
+- **Keep connection strings out of version control** — `databases.json` holds
+  credentials and is gitignored for that reason.
+
+That list is the honest boundary of what a tool like this can promise. It
+can make writes impossible. It cannot decide which data an agent should be
+allowed to read, and pretending otherwise would be the more dangerous default.
+
+The server is open source at
+[mcp-multi-db](https://github.com/mahAnuj/mcp-multi-db); the enforcement
+described here is in `src/sql/validateReadOnly.ts` and the three adapters under
+`src/adapters/`.
+
+If you want an agent reading production data without any way to change it,
+that is [an MCP server I can build](/contact) for your stack, with the same two
+layers and the operator's half written down.

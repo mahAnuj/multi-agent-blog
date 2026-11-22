@@ -1,0 +1,343 @@
+---
+title: "LLM09: Misinformation and AI hallucination, real cases"
+description: "No attacker needed: a model states something false, a person acts on it, and the company owns it. Four real AI hallucination cases and the fixes."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 9
+---
+
+In 2022 a traveller whose grandmother had just died asked
+[Air Canada's website chatbot](https://en.wikipedia.org/wiki/Moffatt_v._Air_Canada)
+about bereavement fares. The bot said to fly now and claim the discount
+afterwards. The airline's own policy page said the opposite. The airline
+refused the refund, then told a tribunal the chatbot was responsible for its
+own words. The tribunal
+disagreed.
+
+Nobody hacked anything. A model produced a fluent, specific, wrong answer, and a
+person reasonably believed it. That is the whole risk, and it is the one most
+likely to reach a startup first: you do not need an adversary, only users.
+
+*Misinformation* (OWASP LLM09) is a model producing false or misleading content
+that looks credible, and the harm that follows when people act on it. The
+control that matters most is keeping money, eligibility and legal terms out of
+free text: quote the policy, link it, or hand over to a person.
+
+This post is part 9 of a series on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10).
+
+## What is LLM misinformation?
+
+OWASP's LLM09 entry has two halves. The first is the model getting things wrong. The best-known
+cause is *hallucination*, where a
+[language model generates false information presented as fact](https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence)).
+A model predicts likely text. When it lacks the facts, likely text and true text
+come apart, and the output does not get less confident when that happens. Gaps
+or skew in what the model was trained on make it worse.
+
+The second half is people trusting the output. OWASP calls this
+*overreliance*: the answer is fluent, formatted and specific, so nobody checks
+it, and it flows into a refund decision, a court filing, an install command or a
+health conversation.
+
+Three things make this different from the other nine risks:
+
+- **There may be no attacker at all.** In most of the cases below, an ordinary
+  user asking an ordinary question is the whole incident.
+- **Responsibility does not move to the model.** In the cases below, a tribunal
+  treated an airline's bot as the airline, and a court treated a lawyer's filing
+  as the lawyer's, whatever tool wrote it.
+- **Detail is not evidence.** Invented citations come with case numbers. Invented
+  packages come with install commands. Specificity is what makes the output
+  believable, and the model produces it either way.
+
+## How does misinformation turn into harm?
+
+Most misinformation harm is accidental, so "attack" is a loose word here. The
+patterns worth knowing:
+
+1. **Wrong answer, real reliance.** A customer-facing bot states a policy, price
+   or eligibility rule that is not true. The customer acts on it. The company is
+   then bound by, or liable for, what its bot said.
+2. **Fabricated authority.** The model invents sources: court cases, papers,
+   statistics, quotes. A professional pastes them into work that carries their
+   name.
+3. **Self-confirmation.** Someone suspects an answer is wrong and asks the same
+   model whether it is right. The model confirms it. This is not verification;
+   it is the same process run again.
+4. **Exploiting predictable mistakes.** Here an attacker does appear. If a model
+   reliably invents the same wrong thing, someone can make that wrong thing real.
+   The clearest case is package names: coding assistants suggest libraries that
+   do not exist, and an attacker registers those names with malicious code. The
+   practice has a name,
+   [slopsquatting](https://en.wikipedia.org/wiki/Slopsquatting): registering
+   package names that models tend to invent, a play on typosquatting. It is a
+   supply-chain problem as much as an accuracy one, covered in
+   [LLM03: Supply Chain](/blog/owasp-llm03-supply-chain).
+5. **Silent scope drift.** A system that was tested in one mode, such as fixed
+   scripted replies, is changed to generate free text without anyone retesting
+   what it now says to its real audience.
+
+## Real incidents of AI hallucination
+
+### Air Canada is held liable for its chatbot's bereavement-fare answer
+
+**Court case** · happened February 2024
+
+**How it happened.**
+
+1. After his grandmother died in 2022, Jake Moffatt used the chatbot on Air
+   Canada's website to ask about bereavement fares.
+2. The chatbot told him he could buy a full-price ticket and apply afterwards
+   for a refund of the difference, within 90 days of the ticket being issued.
+3. Another page on the same website said the opposite: bereavement fares could
+   not be claimed retroactively.
+4. Moffatt bought the tickets, applied for the reduced fare, and was refused.
+5. Before British Columbia's Civil Resolution Tribunal, Air Canada argued,
+   according to Wikipedia's summary of the decision, that the chatbot was
+   "a separate legal entity that is responsible for its own actions."
+6. On 14 February 2024, Tribunal Member Christopher C. Rivers rejected that
+   argument and found negligent misrepresentation (2024 BCCRT 149).
+
+**Who was affected.** One traveller, at a moment when he had little reason or
+energy to cross-check a company's own website against itself.
+
+**What was exposed.** The money was small: Wikipedia's summary puts the award
+at about CA$812. The reasoning is the part that matters. According to McCarthy
+Tétrault's summary, the tribunal found
+the airline owed a duty of care, did not take reasonable care that the bot was
+accurate, and that the customer reasonably relied on it. The chatbot is part of
+the website, and the airline is "responsible for all the information on its
+website," as the tribunal put it.
+
+**Lessons.** A bot on your domain speaks for you exactly as your policy pages
+do. If the bot and the policy page disagree, the customer is not expected to
+work out which one to believe. Answers about money, eligibility or terms should
+come from the policy itself, or go to a person.
+
+**Source:**
+[McCarthy Tétrault, Moffatt v. Air Canada: a misrepresentation by an AI chatbot](https://www.mccarthy.ca/en/insights/blogs/techlex/moffatt-v-air-canada-misrepresentation-ai-chatbot);
+[Wikipedia, Moffatt v. Air Canada](https://en.wikipedia.org/wiki/Moffatt_v._Air_Canada)
+
+### Mata v. Avianca: lawyers sanctioned for filing cases ChatGPT invented
+
+**Court case** · happened June 2023
+
+**How it happened.**
+
+1. Roberto Mata sued the airline Avianca, saying a metal serving cart struck his
+   knee on a flight. Avianca moved the case to federal court in New York, then
+   asked for it to be dismissed as out of time.
+2. The response was researched by Steven A. Schwartz, whose firm, the opinion
+   records, mainly practises in New York state courts. He used ChatGPT.
+3. On 1 March 2023 his colleague Peter LoDuca filed it. It cited judicial
+   opinions, with quotes and citations, that did not exist.
+4. On 15 March, Avianca's reply questioned whether the cases existed. The court
+   then ordered copies to be produced.
+5. Instead of withdrawing, the lawyers stood by the cases. Schwartz had asked
+   ChatGPT directly whether one case was real; it said it was.
+6. On 22 June 2023, Judge P. Kevin Castel found bad faith, based on conscious
+   avoidance and false and misleading statements to the court.
+
+**Who was affected.** The client, whose case was argued on law that did not
+exist. The opposing side and the court, who spent time proving a negative. Real
+judges, whose names were attached to six fake opinions.
+
+**What was exposed.** The court imposed a $5,000 penalty jointly on the two
+lawyers and their firm, Levidow, Levidow & Oberman. It ordered them to send
+their client a copy of the ruling, and to write to each judge falsely named as
+the author of a fake opinion. The opinion opens its list of consequences
+bluntly: "Many harms flow from the submission of fake opinions."
+
+**Lessons.** The judge also wrote that there is nothing inherently improper in
+using a reliable AI tool for assistance. The failure was the missing check, and
+then the refusal to check when challenged. Asking the model to vouch for itself
+was no check at all, and standing by its answer is what turned an error into a
+sanction.
+
+**Source:**
+[Mata v. Avianca, Inc., No. 22-cv-1461 (PKC), Opinion and Order on Sanctions, S.D.N.Y., 22 June 2023 (CourtListener)](https://storage.courtlistener.com/recap/gov.uscourts.nysd.575368/gov.uscourts.nysd.575368.54.0.pdf)
+
+### Coding models invent package names, and repeat them
+
+**Researcher disclosure** · disclosed June 2024
+
+**How it happened.**
+
+1. Coding assistants often suggest code that imports third-party libraries,
+   along with the `pip install` or `npm install` line to fetch them.
+2. Joseph Spracklen and colleagues generated 576,000 code samples in Python and
+   JavaScript with 16 popular code-generating models, commercial and open
+   source.
+3. They checked every suggested package against the public registries. A
+   suggested name that does not exist is what they call a package
+   hallucination.
+4. They found hallucinated packages at an average rate of at least 5.2% for
+   commercial models and 21.7% for open-source models: 205,474 unique invented
+   names.
+5. They then reran 500 prompts that had produced a hallucination, ten times
+   each. In 43% of cases the same invented name came back all ten times; in 39%
+   it never came back.
+6. Higher sampling temperature, the setting that makes output more random,
+   raised the rate.
+
+**Who was affected.** Any developer who installs what an assistant suggests
+without checking it exists and is the package they meant. The paper reports a
+measurement, not a known attack; the researchers write that they chose, for
+ethical reasons, not to publish real packages under the hallucinated names.
+
+**What was exposed.** The repeatability is the problem. A random mistake is hard
+to exploit. A name that comes back every time can be registered in advance
+and filled with malicious code, waiting for the next developer who trusts the
+suggestion. The paper
+was published at USENIX Security 2025, where it received a Distinguished Paper
+Award.
+
+**Lessons.** Model output that triggers an install is untrusted input, the
+same principle as
+[LLM05: Improper Output Handling](/blog/owasp-llm05-improper-output-handling). Check
+that a package exists, has a history, and is the one you intended, before it
+lands in a lockfile.
+
+**Source:**
+[Spracklen et al., We Have a Package for You! (arXiv)](https://arxiv.org/abs/2406.10279);
+[USENIX Security 2025 paper page](https://www.usenix.org/conference/usenixsecurity25/presentation/spracklen);
+[USENIX prepublication PDF](https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-742-spracklen.pdf)
+
+### An eating-disorder support chatbot gives dieting advice and is taken down
+
+**Real-world incident** · happened May 2023
+
+**How it happened.**
+
+1. Tessa was a chatbot built by a research team, with funding from the US
+   National Eating Disorders Association (NEDA). One of its designers,
+   Washington University psychologist Ellen Fitzsimmons-Craft, told NPR the
+   version they tested was rule-based: every response was pre-written.
+2. Cass, a mental-health chatbot company, ran Tessa as a free service.
+3. According to NPR, Cass's CEO said a systems upgrade the previous year had
+   added a question-and-answer feature using generative AI. NEDA's CEO said NEDA
+   was never told and would not have approved it.
+4. In May 2023, eating-disorder consultant Sharon Maxwell said Tessa told her
+   she could lose one to two pounds a week, eat no more than 2,000 calories a
+   day, and keep a daily deficit of 500 to 1,000 calories, NPR reported.
+5. On 30 May 2023, less than a day after receiving her screenshots, NEDA took
+   Tessa down "until further notice," according to NPR.
+
+**Who was affected.** People using a support service for eating disorders, the
+audience for whom calorie-deficit advice is most likely to do harm. The reports
+give no user numbers and document no confirmed clinical harm.
+
+**What was exposed.** CBS News reported that NEDA said the bot "may have given
+information that was harmful." NPR reported that NEDA had also announced it
+was closing its human-staffed helpline, so the bot was meant to carry more
+weight just as it failed. Both organisations apologised, while disagreeing
+about what had happened and when.
+
+**Lessons.** Moving a bot from scripted replies to generated ones is a new
+system, not an upgrade, and the people accountable for it need to know. Test
+for advice that is harmful to your particular audience, even if it would be
+fine for someone else.
+
+**Source:**
+[NPR via WAMC, An eating disorders chatbot offered dieting advice](https://www.wamc.org/2023-06-08/an-eating-disorders-chatbot-offered-dieting-advice-raising-fears-about-ai-in-health);
+[CBS News, Eating disorder helpline disables chatbot](https://www.cbsnews.com/news/eating-disorder-helpline-chatbot-disabled/)
+
+## How can a small team reduce misinformation risk?
+
+None of these makes a model truthful. Each one reduces how often a wrong answer
+reaches someone, or how much damage it does when it does.
+
+- **Ground answers in your own sources.**
+  [Retrieval-augmented generation (RAG)](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+  means the app looks up relevant documents and hands them to the model before
+  it answers. For policy questions, retrieve the actual policy page, show the
+  link next to the answer, and decline when nothing relevant was found. This
+  reduces invention; it does not stop the model misreading what it was given,
+  and it adds risks of its own, described in
+  [LLM08: Vector and Embedding Weaknesses](/blog/owasp-llm08-vector-and-embedding-weaknesses).
+- **Route money, eligibility and legal terms away from free text.** Refunds,
+  fares, prices, cancellation terms: quote the policy, link it, or hand over to a
+  person. The Air Canada answer would have been harmless as a link.
+- **Keep a short set of known-answer tests.** Twenty or thirty questions whose
+  correct answers you know, including ones where the right answer is "I don't
+  know" or "ask a person". Run them whenever the prompt, model or documents
+  change, and read the failures. This catches regressions; it will not catch
+  everything. With a small set, a difference between two runs can be noise;
+  [What a prompt change actually costs](/blog/what-a-prompt-change-actually-costs)
+  covers comparing them paired, with a confidence interval.
+- **Check generated claims against a real source, never the model.** Citations
+  get looked up in the actual database. Numbers get traced to where they came
+  from. If a reviewer's only check is asking the model again, there is no check.
+- **Treat suggested packages as untrusted input.** Before installing something
+  an assistant suggested, confirm it exists, has a real history and is the one
+  you meant. Commit a lockfile such as npm's
+  [`package-lock.json`](https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json),
+  which records the exact dependency tree so new names cannot slip in unseen,
+  and review lockfile diffs in pull requests.
+- **Label AI answers in the interface.** Say plainly that the reply is
+  generated and can be wrong, and give a route to a human. It does not prevent
+  errors, but it sets expectations and gives users a way out. Do not decorate
+  answers with a score that sounds like accuracy: the audit in
+  [Governance theatre](/blog/governance-theatre-ai-support-bot) found a
+  "confidence" figure set by answer length.
+- **Log conversations you are responsible for.** If a bot gives a wrong answer
+  about a policy, you need to find the other people it said the same thing to.
+- **Re-review when the mode changes.** Moving from scripted to generated replies,
+  switching models, or widening what the bot covers is a change that needs the
+  owner's sign-off and a fresh look at real outputs, not only the design.
+- **Turn temperature down where accuracy matters.** For code and factual
+  answers, a lower sampling temperature made invented package names less common
+  in the study above. It narrows the problem rather than closing it.
+
+If you have a bot answering customers about money, eligibility or terms,
+[I can review](/contact) what it is allowed to say in free text and build the
+known-answer tests around it.
+
+## FAQ
+
+**Is a company liable for what its chatbot says?** In the Air Canada case, yes.
+British Columbia's Civil Resolution Tribunal found negligent misrepresentation
+and rejected the argument that the bot was responsible for its own actions,
+according to
+[McCarthy Tétrault](https://www.mccarthy.ca/en/insights/blogs/techlex/moffatt-v-air-canada-misrepresentation-ai-chatbot).
+
+**Can I ask the model whether its own answer is right?** That is not a check.
+In Mata v. Avianca, a lawyer asked ChatGPT whether a case was real and it said
+yes; the court later found bad faith and imposed a $5,000 penalty, according to
+[the sanctions opinion](https://storage.courtlistener.com/recap/gov.uscourts.nysd.575368/gov.uscourts.nysd.575368.54.0.pdf).
+
+**What is slopsquatting?** Registering package names that coding models tend to
+invent, so the next developer who installs a suggestion gets the attacker's
+code. It works because the mistakes repeat: in
+[Spracklen et al.](https://arxiv.org/abs/2406.10279), 43% of rerun prompts
+produced the same invented name all ten times.
+
+**Does RAG stop hallucination?** It reduces invention by giving the model your
+actual documents, but the model can still misread what it was given. Pair it
+with known-answer tests and a route to a person.
+
+## References
+
+- [OWASP, LLM09:2025 Misinformation](https://genai.owasp.org/llmrisk/llm092025-misinformation/)
+- [The series overview: OWASP Top 10 for LLM Applications 2025](/blog/owasp-llm-top-10)
+- [McCarthy Tétrault, Moffatt v. Air Canada: a misrepresentation by an AI chatbot](https://www.mccarthy.ca/en/insights/blogs/techlex/moffatt-v-air-canada-misrepresentation-ai-chatbot)
+- [Wikipedia, Moffatt v. Air Canada](https://en.wikipedia.org/wiki/Moffatt_v._Air_Canada)
+- [Mata v. Avianca, Inc., Opinion and Order on Sanctions, S.D.N.Y., 22 June 2023](https://storage.courtlistener.com/recap/gov.uscourts.nysd.575368/gov.uscourts.nysd.575368.54.0.pdf)
+- [Spracklen et al., We Have a Package for You! A Comprehensive Analysis of Package Hallucinations by Code Generating LLMs (arXiv)](https://arxiv.org/abs/2406.10279)
+- [USENIX Security 2025, paper page](https://www.usenix.org/conference/usenixsecurity25/presentation/spracklen)
+- [USENIX Security 2025, prepublication PDF](https://www.usenix.org/system/files/conference/usenixsecurity25/sec25cycle1-prepub-742-spracklen.pdf)
+- [NPR via WAMC, An eating disorders chatbot offered dieting advice, raising fears about AI in health](https://www.wamc.org/2023-06-08/an-eating-disorders-chatbot-offered-dieting-advice-raising-fears-about-ai-in-health)
+- [CBS News, report on NEDA disabling the Tessa chatbot](https://www.cbsnews.com/news/eating-disorder-helpline-chatbot-disabled/)
+- [Wikipedia, Hallucination (artificial intelligence)](https://en.wikipedia.org/wiki/Hallucination_(artificial_intelligence))
+- [Wikipedia, Slopsquatting](https://en.wikipedia.org/wiki/Slopsquatting)
+- [Wikipedia, Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+- [npm Docs, package-lock.json](https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json)
+- [Governance theatre: auditing an AI support bot](/blog/governance-theatre-ai-support-bot)
+- [What a prompt change actually costs](/blog/what-a-prompt-change-actually-costs)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
+([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent
+commentary, not endorsed by OWASP.

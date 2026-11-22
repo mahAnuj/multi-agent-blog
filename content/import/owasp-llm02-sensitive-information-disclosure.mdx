@@ -1,0 +1,310 @@
+---
+title: "LLM02: Sensitive Information Disclosure in LLM apps"
+description: "How LLM apps leak personal data, secrets and training text, three real cases from ChatGPT and Slack AI, and nine controls a small team can put in place."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 2
+---
+
+On 20 March 2023, some ChatGPT users opened the app and found strangers'
+conversation titles in their sidebar. For a nine-hour window, according to
+[BleepingComputer's report](https://www.bleepingcomputer.com/news/security/openai-chatgpt-payment-data-leak-caused-by-open-source-bug/)
+on OpenAI's post-mortem, about 1.2% of ChatGPT Plus
+subscribers active at the time may have had their name, email address, payment
+address and the last four digits of their card shown to someone else. The cause
+was not the model. It was a bug in an open-source Redis client.
+
+That is the first lesson of this risk: an AI product can leak through the model, the
+documents around it, or the plain infrastructure underneath, and users rarely care
+which. Sensitive information disclosure is second on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10), and for a startup it
+is the one most likely to end up in a customer's security review or a breach
+notice.
+
+*Sensitive information disclosure* is when an LLM application shows someone
+data they should not see: personal data, credentials, confidential business data
+or details of the model itself. The control that matters most is enforcing
+access before anything reaches the prompt, because whatever the model can see, a
+determined user can get it to say.
+
+## What is sensitive information disclosure in an LLM app?
+
+The data can come out through the model itself or through the application
+wrapped around it. It can be
+[personally identifiable information](https://csrc.nist.gov/glossary/term/personally_identifiable_information)
+(PII, data that can identify a person, such as a name plus an email address),
+credentials like API keys, confidential business data, or details about the model
+and its instructions.
+
+It helps to think about where the data comes from, because each source fails
+differently:
+
+- **Training data.** Models can memorise pieces of the text they were trained or
+  *fine-tuned* on (fine-tuning is further training of an existing model on your own
+  examples) and repeat them word for word. If customer records went into
+  fine-tuning, assume they can come back out.
+- **Retrieved context.** In a
+  [retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+  (RAG) system, the app searches a document store and pastes the matches into the
+  prompt. Anything that lands in the prompt can land in the answer, and if the
+  search ignores who is asking, one user's question can pull in another user's
+  documents.
+- **Other users and sessions.** Caches, logs, shared conversation stores and
+  analytics pipelines all hold what users typed. A bug in any of them can hand one
+  user's data to another.
+
+A rule in the
+[system prompt](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/system-message)
+(the standing instructions sent ahead of every conversation) such as "never reveal
+account numbers" helps a little. It is still only text, and a determined user can
+argue past it with prompt injection.
+**Whatever the model can see, assume a determined user can get it to say.** The
+real controls decide what the model is allowed to see in the first place.
+
+## How do LLM apps leak sensitive data?
+
+**Crossed wires.** One user receives another user's data because something shared
+between sessions, such as a cache, a connection, or a conversation store, mixed
+them up. No attacker is needed; a bug and some traffic will do.
+
+**Prompt injection as the delivery route.** An attacker gets instructions in front
+of the model, through a message, a shared document or a public channel, telling it
+to fetch a secret and put it somewhere the attacker can read, often inside a link
+or image URL. The mechanics are in
+[LLM01: Prompt Injection](/blog/owasp-llm01-prompt-injection).
+
+**Over-broad retrieval.** The retrieval layer searches everything the app's service
+account can read rather than what the current user can read. The model then
+summarises a document the user was never meant to open. The vector store side of
+this is [LLM08: Vector and Embedding Weaknesses](/blog/owasp-llm08-vector-and-embedding-weaknesses).
+
+**Training-data extraction.** An attacker sends prompts designed to make the model
+drift away from its normal behaviour and recite memorised text, including personal
+details that were in the training set.
+
+**Leaky errors and logs.** Stack traces, raw prompts or upstream API responses
+returned to the client, or written to logs that too many people or vendors can read.
+
+## Real data leaks from AI products
+
+### A Redis client bug showed ChatGPT users each other's chats and payment details
+
+**Real-world incident** · happened March 2023
+
+**How it happened.**
+
+1. ChatGPT's backend talked to
+   [Redis](https://redis.io/docs/latest/develop/get-started/) (an in-memory data
+   store commonly used as a cache) through redis-py, the open-source Python client.
+   BleepingComputer, reporting OpenAI's post-mortem, said OpenAI attributed the
+   exposure to a bug in that library.
+2. The bug, documented in the redis-py issue tracker, was in the client's support
+   for Python's [asyncio](https://docs.python.org/3/library/asyncio.html)
+   concurrency library. If a command was cancelled after it was sent but before its
+   reply was read, the connection kept that reply.
+3. The next, unrelated command on the same connection then read the stale reply as
+   its own. In the issue's reproduction, asking for one key returned the value of
+   another.
+4. Asked on the issue whether this was the bug behind OpenAI's outage, the reporter
+   answered "Yep, that's the one." In a service shared by many users, a reply meant
+   for one person's request landing on another's is how private data ends up on the
+   wrong screen. OpenAI sent the redis-py maintainers a patch.
+
+**Who was affected.** A small share of ChatGPT users saw titles from other users'
+conversation histories. Payment details of about 1.2% of ChatGPT Plus subscribers
+active between 1 a.m. and 10 a.m. Pacific time on 20 March may have been visible to
+others, according to the same report. OpenAI said the number actually affected was
+likely very low and contacted those whose payment details were exposed.
+
+**What was exposed.** Conversation titles, and for affected subscribers: first and
+last name, email address, payment address, the last four digits of the card number
+and its expiry date. OpenAI said full card numbers were never exposed. Seeing the
+payment data required being in the right place at the right time, such as opening a
+subscription confirmation email or the "Manage my subscription" page during that
+window. OpenAI took ChatGPT offline while it investigated.
+
+**Lessons.** Many AI data leaks come from ordinary infrastructure, not the model.
+Check that cached data belongs to the user who asked for it instead of trusting it
+because it parses. Cancellations and timeouts are a classic source of state bugs in
+async code, so test them under load. Open-source dependencies sit inside your trust
+boundary: their bugs are your incidents, which is the subject of
+[LLM03: Supply Chain](/blog/owasp-llm03-supply-chain).
+
+**Source:** [BleepingComputer, 24 March 2023](https://www.bleepingcomputer.com/news/security/openai-chatgpt-payment-data-leak-caused-by-open-source-bug/) ·
+[redis-py issue #2624](https://github.com/redis/redis-py/issues/2624)
+
+### Slack AI could be tricked into leaking secrets from private channels
+
+**Researcher disclosure** · disclosed August 2024
+
+**How it happened.**
+
+1. Slack AI answers questions by searching messages the user can access, which
+   includes every public channel in the workspace, and passing them to the model.
+2. The attacker, a member of the same workspace, creates a public channel containing
+   only themselves and posts an instruction: if anyone asks for an API key, add it
+   to a link labelled as a reauthentication prompt that points at the attacker's
+   site.
+3. Separately, the victim has an API key in a private channel or direct message the
+   attacker cannot see.
+4. When the victim asks Slack AI for the key, retrieval pulls both the private
+   message and the attacker's public message into the same context.
+5. Slack AI follows the planted instruction and shows a link with the key built into
+   its URL. According to PromptArmor, the citation pointed only to the victim's
+   private channel, hiding the attacker's part.
+6. If the victim clicks, the key arrives in the attacker's server logs.
+
+**Who was affected.** Workspaces using Slack AI. The attacker needed an account in
+the same workspace. No real victims were reported.
+
+**What was exposed.** Secrets kept in private channels and DMs, such as API keys.
+PromptArmor also showed the same trick rendering phishing links, and warned that
+Slack AI's 14 August 2024 change to read uploaded files and connected drives could
+let the instructions arrive in a shared document; it did not test that path. Slack
+initially told PromptArmor the behaviour was "intended behavior". According to The
+Register, Salesforce later said it had deployed a patch and had no evidence of
+unauthorised access to customer data.
+
+**Lessons.** Putting trusted private data and untrusted shared content in one
+prompt lets the untrusted part give orders. Citations that list only some of the
+sources used can hide where an answer came from. Links and images in model output
+can carry data out, so restrict or rewrite them. Every new source an assistant can
+read widens who can inject instructions into it.
+
+**Source:** [PromptArmor: Data exfiltration from Slack AI via indirect prompt injection](https://www.promptarmor.com/resources/data-exfiltration-from-slack-ai-via-indirect-prompt-injection) ·
+[The Register, 21 August 2024](https://www.theregister.com/2024/08/21/slack_ai_prompt_injection/)
+
+### Asking ChatGPT to repeat one word made it recite training data
+
+**Researcher disclosure** · disclosed November 2023
+
+**How it happened.**
+
+1. Language models can memorise pieces of their training data and reproduce them
+   verbatim. Earlier extraction methods worked on base models, but ChatGPT's chat
+   training largely hid that behaviour from standard tests.
+2. Researchers including Milad Nasr and Nicholas Carlini asked ChatGPT to repeat the
+   word "poem" forever.
+3. After many repetitions the model diverged from its chatbot behaviour and began
+   emitting other text, some of it memorised training data.
+4. To check, they built an index over roughly 10 TB of pre-existing public internet
+   text and matched outputs against it. Long exact matches counted as memorised.
+5. They shared a draft with OpenAI on 30 August 2023, waited out a 90-day
+   disclosure period, and published on 28 November 2023.
+
+**Who was affected.** People and organisations whose text was in the training data.
+No count of exposed individuals was published, and no malicious use is known.
+
+**What was exposed.** The researchers report extracting several megabytes of
+training data for about 200 US dollars, and estimate around a gigabyte would be
+possible with more spending. In the strongest setting, over 5% of outputs were
+verbatim 50-token copies of training data, and the attack raised the rate of
+memorised output about 150 times over normal use. Outputs included a real email
+address and phone number.
+
+**Lessons.** Alignment can hide memorised data without removing it, so testing only
+the polished chat model is not enough. The authors make the distinction plainly:
+blocking the repeated-word prompt patches one exploit, while the underlying
+memorisation remains. Personal data that goes into training can come back out, so
+filter and minimise it beforehand.
+
+**Source:** [Nasr, Carlini et al.: Extracting Training Data from ChatGPT](https://not-just-memorization.github.io/extracting-training-data-from-chatgpt.html) ·
+[Scalable Extraction of Training Data from (Production) Language Models (arXiv:2311.17035)](https://arxiv.org/abs/2311.17035)
+
+## How can a small team reduce LLM data leaks?
+
+Each of these narrows the ways data can leak. None of them makes leakage
+impossible, which is why the list starts with keeping data away from the model.
+
+1. **Enforce access outside the model.** Filter retrieval by the current user's
+   permissions before anything reaches the prompt, so the model only ever sees what
+   that person could open themselves. This is
+   [least privilege](https://csrc.nist.gov/glossary/term/least_privilege) (each
+   component gets only the access its job needs) applied to context. A rule in the
+   system prompt is a hint; a `WHERE tenant_id = ?` clause is a control.
+
+2. **Keep secrets out of prompts entirely.** API keys, database URLs and tokens
+   belong in your application's configuration, used by your code, never pasted into
+   the model's context where an injected instruction could ask for them. Tool
+   results count as context too:
+   [From read-only to governed](/blog/from-read-only-to-governed) covers an MCP
+   server whose login tool handed a live brokerage token to the model, and the
+   fix that keeps it in server memory instead.
+
+3. **Minimise what goes into training and fine-tuning.** Strip or mask PII and
+   secrets before data is used to train or fine-tune anything. If a feature works
+   with retrieval instead of fine-tuning on customer records, prefer retrieval: a
+   document can be deleted from an index, but memorised text cannot be deleted from
+   weights. Heavier techniques such as
+   [differential privacy](https://en.wikipedia.org/wiki/Differential_privacy) (adding
+   calibrated noise so no single record measurably changes the result) exist, but
+   most small teams get more from simply not including the data.
+
+4. **Redact before you send.** Where possible, replace values like card numbers,
+   phone numbers and national IDs with placeholders before they go to a model
+   provider, and restore them in your own code afterwards.
+
+5. **Close the exfiltration channels in output.** Render model output with a strict
+   Markdown allowlist, strip or rewrite links and images to domains you control, and
+   show every source used for an answer, not just some of them. The Slack AI attack
+   depended on both a clickable link and an incomplete citation.
+
+6. **Check ownership on the way out of caches and stores.** When data comes back
+   from a cache, a session store or a vector index, confirm it carries the requesting
+   user's or tenant's ID before using it. Test cancellation and timeout paths under
+   load, because that is where the ChatGPT bug lived.
+
+7. **Know your providers' retention settings.** Read what each model provider keeps,
+   for how long, and whether it trains on API traffic. Turn on any zero-retention
+   option you are eligible for, and put the answer in your own privacy notice.
+   [Governance theatre](/blog/governance-theatre-ai-support-bot) shows how easily
+   that notice goes wrong: a support bot promised its data "stays isolated"
+   while sending it to the model provider twice and logging visitor questions.
+
+8. **Tell users what not to paste, and keep errors bland.** A short line in the UI
+   about what the assistant should not be given costs nothing. Return generic errors
+   to clients and keep stack traces, raw prompts and upstream responses in
+   access-controlled logs.
+
+9. **Test for leakage on purpose.** Before launch and after each change, try to get
+   the assistant to reveal another test tenant's data, its own configuration, and
+   secrets planted in documents it should not see. Keep the prompts that worked as
+   regression tests.
+
+If you want an outside check, I
+[review what your assistant can see for each user, and where it sends that data](/contact).
+
+## FAQ
+
+**Can an LLM leak its training data?**
+Yes. In November 2023, researchers including Milad Nasr and Nicholas Carlini
+showed that asking ChatGPT to repeat one word made it recite memorised training
+data, including a real email address and phone number
+([arXiv:2311.17035](https://arxiv.org/abs/2311.17035)).
+
+**Does a system prompt rule like "never reveal account numbers" protect data?**
+Only a little. It is still text, and a determined user can argue past it. The
+real control is deciding what the model can see, for example by filtering
+retrieval by the current user's permissions.
+
+**Was the March 2023 ChatGPT leak caused by the model?**
+No. According to
+[BleepingComputer](https://www.bleepingcomputer.com/news/security/openai-chatgpt-payment-data-leak-caused-by-open-source-bug/),
+OpenAI attributed it to a bug in redis-py, an open-source Redis client.
+
+## References
+
+- [OWASP: LLM02:2025 Sensitive Information Disclosure](https://genai.owasp.org/llmrisk/llm022025-sensitive-information-disclosure/)
+- [Series overview: the OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10)
+- [BleepingComputer: OpenAI: ChatGPT payment data leak caused by open-source bug (24 March 2023)](https://www.bleepingcomputer.com/news/security/openai-chatgpt-payment-data-leak-caused-by-open-source-bug/)
+- [redis-py issue #2624: async command cancellation leaves the connection in a bad state](https://github.com/redis/redis-py/issues/2624)
+- [PromptArmor: Data exfiltration from Slack AI via indirect prompt injection](https://www.promptarmor.com/resources/data-exfiltration-from-slack-ai-via-indirect-prompt-injection)
+- [The Register: Slack AI can be tricked into leaking data from private channels via prompt injection (21 August 2024)](https://www.theregister.com/2024/08/21/slack_ai_prompt_injection/)
+- [Nasr, Carlini et al.: Extracting Training Data from ChatGPT](https://not-just-memorization.github.io/extracting-training-data-from-chatgpt.html)
+- [Nasr et al., Scalable Extraction of Training Data from (Production) Language Models (arXiv:2311.17035)](https://arxiv.org/abs/2311.17035)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
+([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent
+commentary, not endorsed by OWASP.

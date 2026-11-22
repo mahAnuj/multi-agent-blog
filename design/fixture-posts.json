@@ -1,0 +1,89 @@
+[
+ {
+  "slug": "what-changed-when-agents-stopped-sharing-a-context",
+  "title": "What changed when my agents stopped sharing a context",
+  "excerpt": "Splitting one long prompt into a writer, a reviewer and a fact-checker made the drafts better and the pipeline slower. Here is where the time went.",
+  "categoryId": "cat-1",
+  "tags": [
+   "agents",
+   "architecture"
+  ],
+  "readTime": 7,
+  "publishedAt": "2026-11-18T09:00:00.000Z",
+  "content": "Every agent pipeline starts the same way: one model, one prompt, one happy path. The trouble begins when the second agent arrives and the two of them have to agree on what *done* means.[^1]\n\nThis post walks through what changed when the blog's writer, reviewer and fact-checker stopped sharing a single context and started handing work to each other.\n\n## Why one context stopped working\n\nA single context is cheap to reason about. Every step can see every earlier step, so nothing is ever lost in a hand-off. It is also the reason the drafts got worse as they got longer: the reviewer was grading text it had partly written itself.[^2]\n\nSplitting the work meant each agent saw only what it needed. The writer saw the brief and the sources. The reviewer saw the draft and the rubric. The fact-checker saw claims, one at a time, and nothing else.\n\n> The fastest way to make an agent honest is to stop showing it its own work.\n\n## The hand-off format\n\nEach hand-off is a small JSON document rather than free text. That sounds bureaucratic, but it is what lets a later step reject an earlier one without arguing about tone.\n\n```ts\ntype Handoff = {\n  stage: \"draft\" | \"review\" | \"factcheck\";\n  input: string;\n  verdict?: \"pass\" | \"revise\";\n  notes: string[];\n};\n```\n\nThe reviewer can return `revise` with notes, and the writer gets exactly those notes back, not the reviewer's whole transcript.[^3]\n\n## What it cost\n\nThree agents cost more tokens than one, but less than you would expect. Most of the reviewer's and fact-checker's input is short, and the writer's second pass is usually a small edit rather than a rewrite.\n\nThe bigger cost was latency. A draft that took forty seconds now takes about two minutes, because the stages run one after another. For a blog that publishes a few times a week, that trade was easy.\n\n## What I would do differently\n\nI would add the fact-checker first, not last. It caught more real problems than the reviewer did, and it is the simplest of the three to build.\n\n[^1]: In practice \"done\" meant three different things: the writer thought it meant \"long enough\", the reviewer \"on topic\", and the fact-checker \"nothing false\".\n[^2]: This is the same reason code review works better when the reviewer did not write the code.\n[^3]: Keeping the notes short also keeps the writer's context small, which matters more than the token count suggests.\n",
+  "authorId": "user-1",
+  "status": "published"
+ },
+ {
+  "slug": "postgres-is-a-fine-queue-until-it-isnt",
+  "title": "Postgres is a fine queue until it isn't",
+  "excerpt": "SKIP LOCKED gets you surprisingly far. The day it stops is the day you learn what your workload actually looks like.",
+  "categoryId": "cat-2",
+  "tags": [
+   "postgres"
+  ],
+  "readTime": 6,
+  "publishedAt": "2026-11-12T09:00:00.000Z",
+  "content": "A short post body.\n\n## One section\n\nMore text.",
+  "authorId": "user-1",
+  "status": "published"
+ },
+ {
+  "slug": "streaming-ui-without-layout-shift",
+  "title": "Streaming UI without layout shift",
+  "excerpt": "Reserving space for text you have not received yet is harder than it sounds. Three approaches and the one I kept.",
+  "categoryId": "cat-3",
+  "tags": [
+   "react",
+   "ux"
+  ],
+  "readTime": 5,
+  "publishedAt": "2026-11-06T09:00:00.000Z",
+  "content": "A short post body.",
+  "authorId": "user-1",
+  "status": "published"
+ },
+ {
+  "slug": "cold-starts-on-a-free-tier",
+  "title": "Cold starts on a free tier",
+  "excerpt": "What a sleeping container costs your first visitor, and the two settings that made it bearable.",
+  "categoryId": "cat-4",
+  "tags": [
+   "hosting"
+  ],
+  "readTime": 4,
+  "publishedAt": "2026-10-30T09:00:00.000Z",
+  "content": "A short post body.",
+  "authorId": "user-1",
+  "status": "published"
+ },
+ {
+  "slug": "evals-that-catch-regressions",
+  "title": "Evals that actually catch regressions",
+  "excerpt": "A paired comparison on twenty fixed examples beats a thousand unpaired ones. The statistics are short; the discipline is not.",
+  "categoryId": "cat-1",
+  "tags": [
+   "evals",
+   "llm"
+  ],
+  "readTime": 8,
+  "publishedAt": "2026-10-22T09:00:00.000Z",
+  "content": "A short post body.",
+  "authorId": "user-1",
+  "status": "published"
+ },
+ {
+  "slug": "typed-errors-across-an-api-boundary",
+  "title": "Typed errors across an API boundary",
+  "excerpt": "Zod on both sides of the wire, and the one place where it still lets an untyped error through.",
+  "categoryId": "cat-2",
+  "tags": [
+   "typescript"
+  ],
+  "readTime": 5,
+  "publishedAt": "2026-10-15T09:00:00.000Z",
+  "content": "A short post body.",
+  "authorId": "user-1",
+  "status": "published"
+ }
+]

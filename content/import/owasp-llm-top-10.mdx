@@ -1,0 +1,187 @@
+---
+title: "OWASP LLM Top 10 2025 explained for startup teams"
+description: "All ten OWASP LLM risks for 2025 in plain words: where each one enters an AI product, the control that matters most, and real incidents for every risk."
+date: 2026-11-02
+tags: ["owasp", "security", "llm", "agents", "governance"]
+series:
+  id: owasp-llm-top-10
+  part: overview
+---
+
+A tribunal has made an airline
+[pay for a refund policy its chatbot invented](https://www.mccarthy.ca/en/insights/blogs/techlex/moffatt-v-air-canada-misrepresentation-ai-chatbot).
+A federal judge has
+[sanctioned two lawyers](https://storage.courtlistener.com/recap/gov.uscourts.nysd.575368/gov.uscourts.nysd.575368.54.0.pdf)
+for filing case law that a model made up. Researchers have measured coding
+assistants
+[inventing more than 200,000 distinct names](https://arxiv.org/abs/2406.10279)
+for software packages that do not exist. None of these needed a sophisticated
+attacker. They needed a model, a user, and a team that had not thought about
+where the model's words would go.
+
+If you are shipping an LLM feature, that team is yours. The *OWASP Top 10 for
+LLM Applications 2025* is a ranked list of the ten security risks specific to
+software built on large language models, from prompt injection (LLM01) to
+unbounded consumption (LLM10). The control that runs through all ten is to
+treat the model as an untrusted component and enforce limits in code around it,
+not in the prompt. This series takes the risks one at a time, with real
+incidents for each.
+
+## What is the OWASP Top 10 for LLM Applications?
+
+The [OWASP GenAI Security Project](https://genai.owasp.org/) is a
+community-driven OWASP initiative that publishes free, open guidance on the
+security and safety risks of generative AI. Its
+[Top 10 for LLM Applications](https://genai.owasp.org/llm-top-10/) ranks the
+risks specific to software built on large language models. The 2025 version was
+released on 18 November 2024, the date on the cover and in the revision history
+of [the full document](https://genai.owasp.org/download/43299/?tmstv=1731900559).
+
+It is written for the people building these systems, which at a startup usually
+means the CTO and two or three engineers. A few terms come up in every entry:
+
+- An *LLM application* is ordinary software that sends text to a
+  [large language model](https://en.wikipedia.org/wiki/Large_language_model),
+  a model trained on vast amounts of text to generate language, and does
+  something with what comes back: a support bot, a coding assistant, a
+  summariser.
+- [Retrieval-augmented generation (RAG)](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+  means the app looks up relevant documents, usually from a vector store of
+  your own content, and hands them to the model alongside the question, so the
+  answer can draw on more than the model's training.
+- [Tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview),
+  also called function calling, lets the model ask your code to run a function
+  you defined, such as looking up an order or sending an email, and read the
+  result.
+- An [agent](https://www.anthropic.com/engineering/building-effective-agents)
+  is a system where the model decides for itself which tools to call and in
+  what order, rather than following a fixed path written in code.
+  The [Model Context Protocol (MCP)](https://modelcontextprotocol.io/docs/getting-started/intro)
+  is a common open standard for connecting models to those tools.
+
+The list is not a checklist you pass. It is a shared vocabulary: when a
+customer's security team asks about prompt injection or excessive agency, they
+mean the entries below.
+
+## What are the 10 OWASP LLM risks?
+
+Each name links to a post with what the risk is, how it is exploited, real
+incidents with sources, and controls a small team can act on. "Where it shows
+up" names the stage of a typical LLM app where the risk enters: what the user
+sends (input), what the app looks up (retrieval), the model itself, the tools
+it can call, and what happens to its output.
+
+| ID | Risk | In one line | Where it shows up |
+| --- | --- | --- | --- |
+| LLM01 | [Prompt Injection](/blog/owasp-llm01-prompt-injection) | Text the model reads, typed or hidden in a document, can override what you told it to do | input, retrieval, model |
+| LLM02 | [Sensitive Information Disclosure](/blog/owasp-llm02-sensitive-information-disclosure) | Personal data, secrets or business data come out in an answer to someone who should not see them | retrieval, model, output |
+| LLM03 | [Supply Chain](/blog/owasp-llm03-supply-chain) | Models, datasets, adapters and libraries you did not build can be tampered with or change under you | model, tools |
+| LLM04 | [Data and Model Poisoning](/blog/owasp-llm04-data-and-model-poisoning) | Someone corrupts what the model learns from, planting bias, errors or a hidden trigger | retrieval, model |
+| LLM05 | [Improper Output Handling](/blog/owasp-llm05-improper-output-handling) | Model output passed unchecked into a browser, database or shell becomes an old-fashioned injection bug | output, tools |
+| LLM06 | [Excessive Agency](/blog/owasp-llm06-excessive-agency) | A model with too many tools, permissions or too little oversight turns one mistake into a real action | model, tools |
+| LLM07 | [System Prompt Leakage](/blog/owasp-llm07-system-prompt-leakage) | Hidden instructions get extracted, so they must never hold secrets or enforce access rules | input, model |
+| LLM08 | [Vector and Embedding Weaknesses](/blog/owasp-llm08-vector-and-embedding-weaknesses) | The document store behind RAG can leak across users or be seeded with poisoned content | retrieval |
+| LLM09 | [Misinformation](/blog/owasp-llm09-misinformation) | The model states false things with confidence and people act on them | model, output |
+| LLM10 | [Unbounded Consumption](/blog/owasp-llm10-unbounded-consumption) | Unlimited or oversized requests take the service down, run up the bill or copy the model | input, model |
+
+Two patterns are worth noticing. Most rows include the model, because the model
+is the component you cannot fully specify: it reads instructions and data
+through the same channel and produces output you did not write. And most of the
+harm happens at the edges, where text crosses into something that acts on it.
+**Treat the model as an untrusted component and put your controls in code around
+it**, not in the prompt.
+
+## What changes when the model can act?
+
+A chatbot that only talks can embarrass you or mislead a customer. Give it
+tools and the same failures can do things.
+
+The shift changes how the list reads. Prompt injection stops being about a rude
+answer and becomes a way for a stranger's text, hidden in an email or a web page
+the agent reads, to choose which of your functions run. Improper output
+handling now includes tool arguments: a model-generated file path or SQL string
+is output, and it needs the same checking. [Excessive agency](/blog/owasp-llm06-excessive-agency),
+LLM06, exists because of this case. Sensitive information disclosure gains a new route,
+because whatever a tool returns goes into the model's context, its transcript
+and its provider. Unbounded consumption grows too, because an agent can loop,
+calling tools and spending tokens with no human waiting on each step.
+
+The useful question for every tool is what it can do in the worst case, not
+what you intended it to do. A few controls follow from that:
+
+- **Give each tool the narrowest capability that does the job.** A read-only
+  database role, an allowlist of methods, a scoped API key. Enforced in code or
+  by the system behind the tool, not by asking the model nicely.
+- **Keep credentials out of the model's context.** The model needs to call the
+  tool, not hold its key.
+- **Put a human approval in front of anything irreversible.** Sending money,
+  deleting data, emailing customers, merging code.
+- **Log every tool call** with its arguments and outcome, so you can answer what
+  happened after the fact.
+
+An earlier post,
+[From read-only to governed](/blog/from-read-only-to-governed), applies this to
+a small MCP server that holds a real brokerage credential: the server was
+read-only by convention, and the audit turned that into a boundary in code,
+kept the access token out of tool results, and added a record of every call.
+
+The same principle scales to many agents. The
+[agent cycle page](/agent-cycle) shows a development loop of 15 agents and 18
+workflows in which merging is designed to be a workflow's job rather than an
+agent's: it merges on evidence, not on any model's judgment. The page is also
+plain about the gap: the unattended delivery loop holds a written grant to
+merge its own pull request after QA, and nothing in its tool list denies it.
+[AI agent pull requests: who holds merge authority](/blog/merge-authority-in-a-workflow)
+explains that design, and
+[What actually goes wrong with a team of agents](/blog/what-goes-wrong-with-agent-teams)
+covers the failures that led to it.
+
+## Which OWASP LLM risks should you read first?
+
+Start with the rows that match what you have built. A support bot over your
+docs should read LLM01, LLM02, LLM08 and LLM09 first. Anything with tools should
+add LLM05 and LLM06. Anything public and pay-per-token should read LLM10 before
+launch. Every control in the series reduces risk; none of them removes it, and
+the posts say so where it matters most.
+
+If you would like help working out which rows apply to your product and what is
+missing, I [review LLM features against this list](/contact).
+
+## FAQ
+
+**When was the OWASP Top 10 for LLM Applications 2025 released?**
+On 18 November 2024, the date on the cover and in the revision history of
+[the full document](https://genai.owasp.org/download/43299/?tmstv=1731900559).
+
+**Is the OWASP LLM Top 10 a checklist you can pass?**
+No. It is a shared vocabulary for risks, so that when a customer's security team
+asks about prompt injection or excessive agency, both sides mean the same thing.
+Every control reduces risk; none removes it.
+
+**What is the number one risk on the list?**
+[LLM01, prompt injection](/blog/owasp-llm01-prompt-injection): text the model
+reads, typed by a user or hidden in a document, can override what you told it
+to do.
+
+**Who publishes it?**
+The [OWASP GenAI Security Project](https://genai.owasp.org/), a
+community-driven OWASP initiative that publishes free, open guidance on the
+security and safety risks of generative AI.
+
+## References
+
+- [OWASP Top 10 for LLM Applications 2025 (official list)](https://genai.owasp.org/llm-top-10/)
+- [OWASP Top 10 for LLM Applications 2025, full document (PDF)](https://genai.owasp.org/download/43299/?tmstv=1731900559)
+- [OWASP GenAI Security Project](https://genai.owasp.org/)
+- [Wikipedia, Large language model](https://en.wikipedia.org/wiki/Large_language_model)
+- [Wikipedia, Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+- [Anthropic, Tool use with Claude](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview)
+- [Anthropic, Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+- [Model Context Protocol, What is MCP?](https://modelcontextprotocol.io/docs/getting-started/intro)
+- [Mata v. Avianca, Inc., Opinion and Order on Sanctions, S.D.N.Y., 22 June 2023](https://storage.courtlistener.com/recap/gov.uscourts.nysd.575368/gov.uscourts.nysd.575368.54.0.pdf)
+- [McCarthy Tétrault, Moffatt v. Air Canada: a misrepresentation by an AI chatbot](https://www.mccarthy.ca/en/insights/blogs/techlex/moffatt-v-air-canada-misrepresentation-ai-chatbot)
+- [Spracklen et al., We Have a Package for You! (arXiv)](https://arxiv.org/abs/2406.10279)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
+([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). This series
+is independent commentary and is not endorsed by OWASP.

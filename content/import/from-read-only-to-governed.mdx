@@ -1,0 +1,242 @@
+---
+title: "From read-only to governed: auditing my own MCP server"
+description: "mcp-zerodha gives an AI model a real brokerage account and was already read-only. Auditing it the way an enterprise reviewer would still found five gaps. Here is each one and its fix."
+date: 2026-10-24
+tags: ["mcp", "agents", "governance", "security"]
+---
+
+[mcp-zerodha](https://github.com/mahAnuj/mcp-zerodha) connects an AI assistant
+to a Zerodha Kite account. Twelve tools: profile, holdings, positions, quotes,
+historical prices, and a few rule-based price signals. Its `AGENTS.md` said, in
+bold, that the server is read-only and must stay that way.
+
+## What governance means for a tool like this
+
+*AI governance* sounds like policy work: committees, principles, documents.
+For anyone building with AI it comes down to something more concrete: **knowing
+what an AI system can do, controlling it, and being able to show both.**
+
+The showing part is what is changing. The
+[EU AI Act](https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai)
+entered into force in August 2024 and became applicable on 2 August 2026, with
+its high-risk rules phased in through 2027 and 2028. The
+[NIST AI Risk Management Framework](https://www.nist.gov/itl/ai-risk-management-framework)
+and [ISO/IEC 42001](https://www.iso.org/standard/81230.html) are voluntary, but
+they have become the vocabulary companies use when deciding whether to let a
+vendor's AI near their data. For a team shipping AI software, governance
+increasingly shows up as questions in a customer's security review.
+
+Most of that discussion happens at the level of models and organisations. An
+MCP server is where it gets concrete: the point where a model is handed a
+credential and a set of actions. For a tool like that, governance means being
+able to answer five plain questions:
+
+1. What can the model actually do?
+2. What stops it doing more?
+3. Where does the data go?
+4. Are the outputs what they claim to be?
+5. Is there a record of what happened?
+
+I put mcp-zerodha through them the way a company's AI review would audit a
+vendor. The server was well behaved. It still failed four of the five, and the
+fixes landed in three commits. **Read-only turned out to be a claim, not a
+control.**
+
+## What the audit found
+
+<ArchDiagram
+  title="Five findings"
+  stages={[
+    { name: "Read-only was a sentence", detail: "Nothing in code stopped a future tool calling placeOrder", meta: "Capability", emphasis: true },
+    { name: "The token went to the model", detail: "generateSession returned the live access token as its result", meta: "Credentials" },
+    { name: "A token file was one git add away", detail: "A CLI script writes .zerodha_token.json; it was not gitignored", meta: "Credentials" },
+    { name: "Signals were off by 100x", detail: "A 0.05% dip raised a buy signal meant for a 5% drop", meta: "Output quality" },
+    { name: "No record of tool calls", detail: "Nothing said which tool ran, when, or with what", meta: "Evidence" },
+  ]}
+  caption="None of these were visible from the README, and none of them broke anything in normal use. That is what makes them governance findings rather than bugs anyone would have reported."
+/>
+
+## 1. Read-only was a sentence, not a boundary
+
+Every tool called a read method, so the server *was* read-only. But that held
+because nobody had written an order tool yet. The Kite client the server holds
+has `placeOrder`, `modifyOrder`, `cancelOrder` and the rest on it, and nothing
+between that client and the account refused them.
+
+In [mcp-multi-db](/blog/read-only-mcp-servers) the database refuses writes, so
+the boundary lives in code I cannot weaken by accident. Here the boundary had to
+live in the process. The fix wraps the client in a proxy that only lets
+allowlisted methods through:
+
+```js title="zerodha.js"
+export const ALLOWED_KITE_METHODS = new Set([
+  'generateSession',
+  'setAccessToken',
+  'getProfile',
+  'getHoldings',
+  'getPositions',
+  'getQuote',
+  'getHistoricalData'
+]);
+
+export function readOnlyClient(client) {
+  return new Proxy(client, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop);
+      if (typeof value !== 'function') return value;
+      if (!ALLOWED_KITE_METHODS.has(prop)) {
+        return () => {
+          throw new Error(`Blocked: kite.${String(prop)} is not on the read-only allowlist`);
+        };
+      }
+      return value.bind(target);
+    }
+  });
+}
+```
+
+It is an allowlist, not a denylist, so a method added in a future version of
+the Kite library is blocked by default. The library's methods reach each other
+through a closure, so its own internal calls never pass through the proxy; the
+`bind` is there so a method that relied on `this` would see the real client too.
+
+Called with a fake key, the eight methods I tried that are not on the list,
+from `placeOrder` to `invalidateAccessToken`, all throw. `getProfile` still
+reaches Kite and fails on authentication, which is the correct failure.
+
+<Callout type="warning">
+This is a guard against a change made by accident, not by an attacker. Code
+that imports `kiteconnect` directly bypasses it. The stronger control would be
+an account-side permission the server cannot widen, and the server has no way
+to provide that itself. `GOVERNANCE.md` says so.
+</Callout>
+
+## 2. The access token went to the model
+
+The login flow ends with `generateSession`, which swaps a request token for an
+access token. The tool returned this:
+
+```js
+return `Session generated successfully. Access token: ${session.access_token}`;
+```
+
+A tool result is not a return value in the ordinary sense. It goes into the
+model's context, into the client's transcript, and to whichever provider runs
+the model. Returning the token copied a live credential for a brokerage account
+into three places the server does not control.
+
+The token now stays in server memory, and the tool says only that a session
+exists. The model never needed the token: every later tool call goes through the
+server, which already holds it.
+
+## 3. A token file one commit away from history
+
+`zerodha-portfolio.js` is a standalone CLI script. It saves the session to
+`.zerodha_token.json` in the working directory so the next run can skip login.
+That file was not in `.gitignore`.
+
+This repo has been here before. Its `CONTRIBUTING.md` records that an earlier
+version committed a token file, and deleting it was not enough: the repository
+had to be rebuilt from a clean root commit. The fix is one line in
+`.gitignore`. The token is still stored in plain text on disk until it expires,
+which is now listed as a known gap rather than left unsaid.
+
+## 4. The signals were off by 100x
+
+`config.js` sets `buySignalThreshold: 0.05` with the comment *5% price drop
+could be a buy signal*. `analyzePriceChanges` compared it against a change
+already expressed in percent:
+
+```js
+buySignal: changePercent <= -TRADING_PARAMS.buySignalThreshold,
+```
+
+So a stock down 1% on the day was flagged, because −1 is below −0.05. The
+intended rule needs a fall of 5%. The sell side had the same error at 0.08%
+instead of 8%. `analyzePortfolio` scaled correctly, which is why nothing looked
+wrong side by side.
+
+This is the finding I would put first in a review, even though it involves no
+security at all. The output was plausible, well formatted and handed to a
+language model that would explain it fluently. Nothing downstream checks it. **Governance includes checking that the system's outputs mean
+what they say.**
+
+The same commit drops `HDFC` from the default watchlist. HDFC Ltd merged into
+HDFC Bank in 2023, so the symbol no longer trades.
+
+## 5. No record of what happened
+
+Every tool now registers through one helper, `addTool`, which does three things
+the old per-tool wrappers did not.
+
+It writes one JSON line to stderr per call. Stderr, because stdout is the MCP
+protocol channel. Credential arguments are redacted:
+
+```json
+{"audit":"tool_call","at":"2026-10-24T07:50:54.146Z","tool":"generateSession","args":{"requestToken":"[redacted]"},"outcome":"error","ms":167}
+```
+
+It sets MCP tool annotations. Eleven tools declare `readOnlyHint: true`.
+`generateSession` declares itself not read-only and not destructive, since it
+creates a session but changes nothing in the account. Annotations are hints a
+client can use to decide what needs the user's confirmation. They inform; the
+allowlist enforces.
+
+And it makes the old pattern impossible to forget. A tool registered any other
+way skips the audit line, so `AGENTS.md` now says to use the helper.
+
+The tool descriptions changed too. `analyzePortfolio` was described as *buy/sell
+recommendations*. It now says what it is: HOLD/SELL/REDUCE flags from fixed rules
+in `config.js`, not investment advice.
+
+## The paperwork is part of the control
+
+The last change is a new file, `GOVERNANCE.md`. It holds a table of what the
+model can and cannot do, each control with the file that implements it, where
+the data goes, and a section headed *Known gaps*.
+
+The data flow section says something the code cannot: holdings, positions and
+their values are sent to whatever model provider the user's MCP client uses. The
+server cannot change that. It can make sure the person connecting it knows.
+
+The known gaps section matters most to a reviewer. It lists the plain-text token
+file, an audit log that lasts only as long as the client keeps stderr, no
+per-call confirmation, and no automated tests. A system that lists its gaps is
+easier to trust than one that claims to have none.
+
+Mapped to the questions a company asks before letting an AI tool near its data:
+
+| A reviewer asks | What answers it in this repo |
+| --- | --- |
+| What actions can the AI take? | `ALLOWED_KITE_METHODS`, and the capability table in `GOVERNANCE.md` |
+| Can the model see credentials? | `generateSession` no longer returns the token |
+| Is AI activity logged? | One audit line per tool call, credentials redacted |
+| Are outputs validated? | The threshold fix, and descriptions that say the signals are rules |
+| What data reaches the model provider? | The data flow section of `GOVERNANCE.md` |
+| What are the known limitations? | The known gaps section, kept current |
+
+## What carries over
+
+None of this is specific to trading:
+
+- **Read-only is enforced, not declared.** If the only thing stopping a write is
+  that nobody has written it yet, it is a convention.
+- **Tool results are an egress path.** Anything a tool returns goes to the model,
+  the transcript and the provider. Credentials never belong there.
+- **Plausible output is the risk.** A wrong number in a clean JSON object, read
+  aloud by a fluent model, is more dangerous than an error.
+- **Record every call.** One line per call costs almost nothing and is the first
+  thing anyone asks for after something goes wrong.
+- **Write the gaps down.** A list of what is not covered is evidence of the same
+  kind as a list of what is.
+
+The changes are three commits:
+[the gitignore fix](https://github.com/mahAnuj/mcp-zerodha/commit/915aa51),
+[the threshold fix](https://github.com/mahAnuj/mcp-zerodha/commit/61cd01c), and
+[the allowlist, token, audit and documentation change](https://github.com/mahAnuj/mcp-zerodha/commit/50acd94).
+The full controls list is in
+[GOVERNANCE.md](https://github.com/mahAnuj/mcp-zerodha/blob/main/GOVERNANCE.md).
+
+If you are about to hand an MCP server or an agent a real credential, I can put
+it through [the same five questions](/contact), answered from the code, with the
+gaps written down for your customer's reviewer.

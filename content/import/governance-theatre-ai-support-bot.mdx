@@ -1,0 +1,491 @@
+---
+title: "Governance theatre: auditing an AI support bot"
+description: "An AI support bot showed an audit log, SSO, live analytics and a confidence score. An audit found most of it was decoration. What was fixed, what is open."
+date: 2026-11-01
+tags: ["ai", "rag", "governance", "security"]
+---
+
+The analytics panel in
+[ai-support-bot](https://github.com/mahAnuj/ai-support-bot) showed how many
+conversations were live. The number was `Math.floor(Math.random() * 50) + 10`.
+
+Every answer also carried a confidence score. It was 85 whenever the answer
+drew on documents, and 95 if the answer ran past 200 characters.
+
+Neither was a bug in the usual sense.
+
+*Governance theatre* is a control that is displayed but does not exist: a
+panel, badge or score a reviewer can tick off with nothing behind it. The check
+that matters most is to follow every displayed control to the code path that
+implements it, then confirm that code is what is actually deployed.
+
+*Updated to the repository at commit
+[6e91402](https://github.com/mahAnuj/ai-support-bot/commit/6e91402)
+(2026-10-25). The numbered sections describe what the audit found and how
+each finding was fixed. [What it does now](#what-it-does-now) covers what was
+built afterwards.*
+
+## What is ai-support-bot?
+
+ai-support-bot turns uploaded documents into a support assistant that can be
+embedded on any website. Upload TXT, Markdown, PDF or DOCX files, chat with
+them in a preview, then paste a script tag into your own site.
+
+It is a Next.js app built on *retrieval-augmented generation*
+([RAG](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)): for each
+question it finds the most relevant passages in the uploaded documents and
+hands them to a language model to answer from. Passages are matched using
+*[embeddings](https://huggingface.co/blog/getting-started-with-embeddings)*,
+lists of numbers that place text with similar meaning close together.
+
+The [previous post, on governing a read-only MCP server](/blog/from-read-only-to-governed),
+put an MCP server through
+five questions a company asks before letting an AI tool near its data:
+
+1. What can it actually do?
+2. What stops it doing more?
+3. Where does the data go?
+4. Are the outputs what they claim to be?
+5. Is there a record of what happened?
+
+mcp-zerodha was well behaved and still failed four. This one failed all five.
+The landing page promised an enterprise panel with an audit log, single
+sign-on, real-time analytics and a confidence score on every answer. **None of
+the four was backed by code that did what the screen said.**
+
+## What the audit found
+
+<ArchDiagram
+  title="Five findings, and one the questions miss"
+  stages={[
+    { name: "An open debug route", detail: "/api/debug listed every session and document, and could wipe the store", meta: "Capability", emphasis: true },
+    { name: "Nothing bounded a caller", detail: "Path traversal on upload, predictable IDs, no rate limits, an unchecked domain list", meta: "Limits" },
+    { name: "Privacy was a slogan", detail: "\"Your data stays isolated\" while documents went to a third party for indexing", meta: "Data flow" },
+    { name: "The numbers were invented", detail: "A confidence score set by answer length, analytics from Math.random", meta: "Output quality" },
+    { name: "The audit log never ran", detail: "A stub panel, shown as a feature", meta: "Evidence" },
+    { name: "The fixes were not live", detail: "Every production deploy had been blocked since 2026-08-30", meta: "Operations" },
+  ]}
+  caption="The first five map to the reviewer questions. The sixth is the one a code review cannot see."
+/>
+
+## 1. A route that could read and wipe everything
+
+`src/app/api/debug/route.ts` answered `GET` with every session, every document,
+the session-to-document mappings and the first 200 characters of sample chunks.
+`POST` with `clearDatabase: true` emptied the store. Neither checked who was
+asking, and its CORS preflight answered any origin.
+
+A debug route is a normal thing to write during development. The governance
+failure is that nothing distinguished it from the product, so it shipped with
+the product.
+
+It is [deleted](https://github.com/mahAnuj/ai-support-bot/commit/2a40ffe), and
+the check in `GOVERNANCE.md` is that `GET /api/debug` returns 404.
+
+## 2. Nothing bounded what a caller could do
+
+The same commit closes three more holes, all in code that took input from
+anyone on the internet.
+
+**The upload path came from the uploaded filename.** The temp file was built
+like this:
+
+```ts title="src/app/api/upload/route.ts (before)"
+const tempFileName = `upload-${Date.now()}-${Math.random().toString(36).substring(7)}-${file.name}`
+const tempFilePath = path.join(tempDir, tempFileName)
+```
+
+A file named `../../x` wrote outside the temp directory, and the cleanup step
+then deleted whatever was at that path. The name now plays no part in the path:
+
+```ts title="src/app/api/upload/route.ts"
+const extension = path.extname(path.basename(file.name)).toLowerCase()
+const safeExtension = ['.txt', '.md', '.pdf', '.docx'].includes(extension) ? extension : ''
+const tempFilePath = path.join(os.tmpdir(), `upload-${crypto.randomUUID()}${safeExtension}`)
+```
+
+**IDs came from `Math.random`.** That matters here more than usual. There are
+no accounts, so a session ID is the only thing between a stranger and a
+session's documents: it is a bearer secret, usable by whoever holds it.
+`Math.random` is not a cryptographic generator, and its output is predictable.
+Session IDs and widget keys now come from `crypto.randomUUID()`.
+
+**Nothing limited spending.** Every chat request spends the deployment's model
+quota, and the widget routes accept requests from any site. That is the risk
+OWASP calls [unbounded consumption](/blog/owasp-llm10-unbounded-consumption).
+
+A new `src/lib/guard.ts` adds a per-IP limit (20 chats and 10 uploads a
+minute). It caps messages at 2,000 characters and custom
+*[system prompts](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices#give-claude-a-role)*,
+the instructions sent to the model ahead of the conversation, at 4,000. It
+also checks a widget's `allowed_domains` against the browser's
+[`Origin` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Origin),
+a field that had been stored but never read.
+
+<Callout type="warning">
+These are limits with stated edges. The rate counts live in memory, so each
+server instance keeps its own and a restart resets them. They are keyed on
+the client's IP as `clientIp` reads it from the `x-real-ip` and
+`x-forwarded-for` headers; on a host that passes those through from the
+client, a caller can change them on every request and get past the limit. The
+domain check stops another website embedding a widget, but not a script that
+forges the header. The builder never set `allowed_domains`; it now offers an
+exact-origin list instead (below). `GOVERNANCE.md` lists each of these as a
+known gap.
+</Callout>
+
+## 3. "Your data stays isolated"
+
+The landing page said *Secure and private, your data stays isolated*. The
+README said *Privacy First: your data stays isolated and secure*.
+
+Neither said where the data went. It went to OpenAI twice: once to embed every
+uploaded document, and again to answer every question. The retrieval code also
+logged the text of visitor questions.
+
+Three changes, in order of what they buy:
+
+- **Documents no longer leave the server to be indexed.**
+  [Commit 014099d](https://github.com/mahAnuj/ai-support-bot/commit/014099d)
+  embeds them in-process with
+  [`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
+  through [transformers.js](https://huggingface.co/docs/transformers.js/index).
+  The model weights are downloaded from Hugging Face on first use; that
+  download sends no user data.
+- **Logs record question length, not question text**
+  ([9c2b096](https://github.com/mahAnuj/ai-support-bot/commit/9c2b096)).
+- **The slogan is replaced with a list.** The builder shows a data disclosure,
+  and `GOVERNANCE.md` says what stays on the server, what goes to the model
+  provider (Groq by default), what sits in server memory and what reaches the
+  browser.
+
+The disclosure needed a correction of its own. The first version said the
+provider retained nothing by default.
+[Commit 6fd93dd](https://github.com/mahAnuj/ai-support-bot/commit/6fd93dd)
+records that Groq's data-controls page says inputs and outputs may be stored
+for up to 30 days unless the organisation enables Zero Data Retention, and
+rewrites the disclosure to say that, with the setting to change.
+
+A disclosure that understates retention is the same defect as the slogan,
+only more convincing.
+
+## 4. The numbers were invented
+
+This is the finding that gives the post its title.
+
+**The confidence score.** Every answer carried a `confidence` field. In the
+widget route, the code computed a figure from retrieval similarity and then
+discarded it, because it returned `response.confidence || confidence` and the
+model call always set its own. That one was decided by this:
+
+```ts title="src/lib/openai.ts (before)"
+if (isEnhanced && context) {
+  confidence = 85
+  if (message.length > 200) {
+    confidence = Math.min(95, confidence + 10)
+  }
+}
+```
+
+So any answer that drew on documents scored 85, and 95 if it ran past 200
+characters. Without documents it was 30, or 35 if the answer contained words
+like *specific* or *documentation*. Length is not evidence of anything. A long,
+wrong answer scored highest. A score like that invites
+the overreliance described in [LLM09: Misinformation](/blog/owasp-llm09-misinformation).
+
+Neither widget script displayed the field, a correction `GOVERNANCE.md` records
+against its own earlier wording, but any API client could read it.
+
+It now carries a *retrieval match score*, from `matchScore` in
+`src/lib/embeddings.ts`. That is where the best passage's
+[cosine similarity](https://en.wikipedia.org/wiki/Cosine_similarity) sits
+between two cut-offs, on a 0 to 100 scale, and 0 when no passage was used. The
+UI labels it a match score. **It measures how closely a passage matches the
+question, not whether the answer is correct**, and the docs say exactly that.
+
+**The cut-offs had to be measured.** Switching embedding models changed the
+similarity scale. Against the repo's own `faq.md`, passages that answer a
+question scored 0.18 to 0.57 with the new model; the best passage for an
+unrelated question scored under 0.10. The old retrieval started its search
+at a 0.5 threshold, which sits near the top of the new range.
+
+`MIN_SIMILARITY` is now 0.15 and `STRONG_SIMILARITY` 0.5, in one file, with a
+comment saying to re-measure before changing the model. `GOVERNANCE.md` is
+plain that this is calibrated on one document.
+
+**The analytics and the customers.** The analytics route returned
+`Math.floor(Math.random() * 50) + 10` active conversations, a random average
+confidence between 0.85 and 0.95, and so on. The enterprise panel showed SSO
+logins and audit-event counts from the same source, and enabling SSO wrote a
+line to the console.
+
+The landing page said *Join thousands of companies*, *90% query accuracy* and
+*50% support cost reduction*, and listed a support address on a domain the
+project does not own.
+[Commit 80908c7](https://github.com/mahAnuj/ai-support-bot/commit/80908c7)
+removes all of it: 1,740 lines deleted, eleven added.
+
+<Callout type="insight">
+A fabricated metric is worse than a missing one. A reviewer who sees no
+analytics asks for them. A reviewer who sees plausible analytics moves on, and
+the product has answered a governance question with a random number.
+</Callout>
+
+## 5. The audit log never ran
+
+The enterprise panel had an audit log. According to the commit that removed it,
+the page passed a business ID the lookup did not recognise, so it never
+returned anything real.
+
+The fix was deletion, not implementation. At 6e91402 there is still no
+per-request audit record beyond server diagnostics, and the post would be its
+own kind of theatre if it said otherwise.
+
+Two quieter changes belong under the same question, because a record is only
+useful if failures show up in it:
+
+- **Embedding errors used to return zero vectors.** On failure the old code
+  returned `new Array(1536).fill(0)`, stored the document anyway and reported
+  the upload as a success. A zero vector matches nothing, so the bot silently
+  knew less than its owner thought. Embedding failures now throw.
+- **Chat errors used to return a canned answer.** When the model call failed,
+  the bot replied *I don't have access to your specific information. Could you
+  provide more details…* with a confidence of 10, which reads like a working
+  bot being unhelpful. It now returns an error.
+
+## 6. The fixes were not live
+
+Everything above was committed and pushed. None of it was running.
+
+[Commit a11ed4c](https://github.com/mahAnuj/ai-support-bot/commit/a11ed4c)
+records that every production deploy since 2026-08-30 had been blocked by
+Vercel's check for a vulnerable Next.js version, so the live site was still the
+build from 2025-08-01. The commits after the upgrade fix four more failures
+that only existed in production:
+
+- The default chat model, `llama-3.1-8b-instant`, had been shut down by Groq on
+  2026-08-16, so chat returned 404
+  ([d4aeaab](https://github.com/mahAnuj/ai-support-bot/commit/d4aeaab)). The
+  same day's migration to Groq had chosen that model.
+- The functions were missing the native ONNX runtime the embeddings need, and
+  once included, pulled in about 260 MB of CUDA providers that took them past
+  Vercel's 250 MB limit
+  ([d4aeaab](https://github.com/mahAnuj/ai-support-bot/commit/d4aeaab),
+  [4c8949c](https://github.com/mahAnuj/ai-support-bot/commit/4c8949c)).
+- `pdf-parse` runs a self-test when it is not the main module, which is always
+  true once bundled, so every PDF upload failed with `ENOENT`
+  ([08fe1da](https://github.com/mahAnuj/ai-support-bot/commit/08fe1da)).
+- The embed code pointed at the per-deployment URL, which sits behind Vercel's
+  login and changes on every deploy, so pasted widgets could not reach the API
+  ([db15260](https://github.com/mahAnuj/ai-support-bot/commit/db15260)).
+
+None of these is a governance control. All of them decide whether the controls
+exist anywhere but the repository. **A review of the code answers what the code
+does. It does not answer what is running.**
+
+## What it does now
+
+After the audit, four features changed where data and credentials can go. Each
+arrived with its controls and its gaps written into `GOVERNANCE.md`.
+
+**Your own database.** Merged in
+[67f7d5f](https://github.com/mahAnuj/ai-support-bot/commit/67f7d5f). A builder
+step takes a Postgres connection string. Documents, passages, embeddings and
+widget settings then live in a `support_bot` schema in that database, with
+embeddings in a [pgvector](https://github.com/pgvector/pgvector) column.
+pgvector is a Postgres extension that stores embeddings and searches them by
+similarity. Every query is filtered to the workspace named in the token.
+
+The server does not store the connection string. It is sealed into two tokens:
+a builder token kept in the browser's `localStorage`, and a widget token inside
+the embed code
+([5edeac8](https://github.com/mahAnuj/ai-support-bot/commit/5edeac8)). Both are
+encrypted with [AES-256-GCM](https://csrc.nist.gov/pubs/sp/800/38/d/final)
+under a server key, `EMBED_TOKEN_KEY`. GCM is authenticated encryption, and the
+token's prefix is part of what is authenticated, so an edited or relabelled
+token fails to decrypt.
+
+The repo also ships SQL for a
+*[least-privilege](https://csrc.nist.gov/glossary/term/least_privilege)* role,
+one with only the rights the app needs: `SELECT`, `INSERT` and `UPDATE` on the
+`support_bot` tables, no `DELETE` and no DDL
+([499df8a](https://github.com/mahAnuj/ai-support-bot/commit/499df8a)).
+
+Until a database is connected, the builder says so: *Demo: documents and this
+widget are deleted when the server restarts*
+([68af660](https://github.com/mahAnuj/ai-support-bot/commit/68af660)).
+
+**Your own model.** Merged in
+[c53498e](https://github.com/mahAnuj/ai-support-bot/commit/c53498e). An owner
+can attach any OpenAI-compatible model with a base URL, API key and model ID;
+answers for their preview and embeds then come from it and spend their
+credits. The key reaches the browser and the embed code only inside encrypted
+tokens ([2db727e](https://github.com/mahAnuj/ai-support-bot/commit/2db727e)).
+
+Every call checks the model address first. It must be `https:`, and anything
+that resolves to localhost, a private network or a link-local address such as
+`169.254.169.254` is refused unless the operator opts in. That guards against
+[server-side request forgery](https://owasp.org/www-community/attacks/Server_Side_Request_Forgery),
+where a caller makes the server reach internal addresses on their behalf
+([e1938a5](https://github.com/mahAnuj/ai-support-bot/commit/e1938a5)). If the
+owner's model fails, the preview returns 502 and the widget 503; the answer
+never quietly comes from Groq instead.
+
+**Allowed sites.** Merged in the same
+[c53498e](https://github.com/mahAnuj/ai-support-bot/commit/c53498e). The embed
+step takes up to 10 sites, normalised to `scheme://host[:port]` and matched
+exactly
+([80e3915](https://github.com/mahAnuj/ai-support-bot/commit/80e3915)). The
+widget chat route refuses an unlisted, missing or `null` `Origin` with 403
+before any retrieval or model call. An embed that uses an owner model or a
+backend cannot be generated without at least one site, because it carries a
+credential that spends someone's money or reaches their server.
+
+**Your own backend.** Merged in
+[6e91402](https://github.com/mahAnuj/ai-support-bot/commit/6e91402). An owner
+can run a server that implements the repo's connector API, and the app then
+sends documents and questions to it and keeps no copy beyond each request. The
+repo includes a reference server in `connector/`, on Postgres and pgvector,
+with a Dockerfile and a Compose file
+([390c143](https://github.com/mahAnuj/ai-support-bot/commit/390c143),
+[df8040f](https://github.com/mahAnuj/ai-support-bot/commit/df8040f)).
+
+Every request after the first health check carries an
+[HMAC](https://en.wikipedia.org/wiki/HMAC)-SHA256 signature, a keyed hash over
+the method, the path, a timestamp, a random nonce and the body's hash. In the
+QA run recorded in `GOVERNANCE.md`, the reference server refused tampered,
+stale and replayed requests with 401. A backend may also write the answers
+itself, in which case no model on the app's server is called.
+
+## The paperwork: what GOVERNANCE.md records
+
+As with mcp-zerodha, the last piece is a `GOVERNANCE.md`. It opens by saying it
+describes controls and is not a certification.
+
+It has a table of what a caller can and cannot do, each control with the file
+that implements it, where data goes in each mode (demo, connected database, own
+model, own backend), and how the match score is computed. It records how each
+control was checked against a local production build: the 21st chat in a
+minute returns 429, a 5,000-character system prompt returns 400, an upload
+named `../../../evil-test.txt` lands at `<tmpdir>/upload-<uuid>.txt`.
+
+The checks are also automated. There are 21
+[Jest](https://jestjs.io/) test files under `src/**/__tests__`, covering
+origin matching, the widget and connector routes, token tampering, the model
+address guard, provider error mapping and request signing. One of them, a
+Postgres integration test, runs only when `TEST_DATABASE_URL` is set. The
+reference connector has 8 more under `connector/test`, run with
+[Node's built-in test runner](https://nodejs.org/api/test.html). Both suites
+check request signatures against the same shared test-vector file.
+
+Its known gaps run to 29, and they should. A selection, in the file's words:
+
+- Retrieval quality is measured on one document.
+- A backend's scores are only comparable if it embeds with the same model.
+- The same model does not give identical scores on every platform. In QA, the
+  reference server on Linux and the app on macOS scored the same passages up
+  to about 0.03 apart, and one passage fell on different sides of the 0.15
+  cut-off.
+- No authentication.
+- Rate limits are per instance.
+- Rate limits trust the client IP headers.
+- Allowed sites rely on the browser's `Origin` and `Referer` headers.
+- Visitors on allowed sites spend the owner's credits. There are no spend
+  caps.
+- No per-token revocation for model keys.
+- Fencing documents reduces prompt injection; it does not prevent it.
+- No retention control, and no delete-my-data UI.
+- One server key protects every token.
+- Session IDs appear in the server log.
+
+The fencing gap needs a gloss.
+*[Prompt injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)*
+is text that gets a model to follow its instructions instead of the
+developer's, and here it can arrive inside an uploaded document. Retrieved
+passages are wrapped in `<documents>` tags and the model is told not to follow
+instructions inside them
+([9c2b096](https://github.com/mahAnuj/ai-support-bot/commit/9c2b096)). That
+lowers the odds; it does not remove them. There is more on the risk itself in
+the [OWASP LLM01 post](/blog/owasp-llm01-prompt-injection).
+
+| A reviewer asks | What answers it in this repo |
+| --- | --- |
+| What can an anonymous caller do? | The can/cannot table in `GOVERNANCE.md`; `/api/debug` removed |
+| What stops abuse of the model key? | `isRateLimited` and `LIMITS` in `src/lib/guard.ts`; allowed sites required for owner-model and backend embeds; no fallback to Groq. Per-instance limits, trusted IP headers and no spend caps are stated as gaps |
+| Where do documents and questions go? | The data flow section, one part per mode, including Groq's 30-day default |
+| Who can read the stored credentials? | AES-256-GCM tokens under `EMBED_TOKEN_KEY`; anyone with a token and that key, as the file says |
+| What does the score on each answer mean? | `matchScore`, labelled as a match score, documented as not a correctness measure |
+| Are the dashboards real? | The ones that were not have been removed |
+| Is any of it tested? | 21 Jest test files in the app, 8 in the reference connector, and the QA runs recorded in `GOVERNANCE.md` |
+| Is the reviewed code what is running? | The deploy fixes, from a11ed4c to db15260 |
+| What is not covered? | The 29 known gaps |
+
+## What carries over to any AI product
+
+None of this is specific to support bots:
+
+- **A displayed control is a claim.** An audit log, an SSO toggle or a security
+  badge in the UI is evidence only of a UI. Check the code path behind it.
+- **Name a number after what computes it.** A score derived from similarity is a
+  match score. Calling it confidence promises something the code never
+  measured.
+- **Thresholds belong to a model, and drift by platform.** Change the embedding
+  model and every cut-off tuned for the old one is wrong, silently. Keep the
+  model and move the hardware, and passages near the cut-off can still flip.
+- **Fail where someone can see it.** A zero vector or a canned apology turns an
+  outage into a product that looks merely mediocre.
+- **Check what is deployed.** Fixes in a blocked pipeline are fixes in a
+  document.
+- **Write the gaps down.** Here the list is long. It is still more useful to a
+  reviewer than *your data stays isolated*.
+
+If your AI product is heading into a customer's security review, I can run
+[the same governance review](/contact) on it: every displayed control traced to
+the code behind it, and to what is actually deployed.
+
+## References
+
+Repository, pinned to the commit this post describes:
+
+- [ai-support-bot at 6e91402](https://github.com/mahAnuj/ai-support-bot/tree/6e9140294afb41189a425d829203e0bd3c373f6c)
+- [`GOVERNANCE.md`](https://github.com/mahAnuj/ai-support-bot/blob/6e9140294afb41189a425d829203e0bd3c373f6c/GOVERNANCE.md): controls, data flow, known gaps and QA records
+- [`src/lib/guard.ts`](https://github.com/mahAnuj/ai-support-bot/blob/6e9140294afb41189a425d829203e0bd3c373f6c/src/lib/guard.ts): rate limits, size caps and origin checks
+- [`connector/README.md`](https://github.com/mahAnuj/ai-support-bot/blob/6e9140294afb41189a425d829203e0bd3c373f6c/connector/README.md): the reference backend
+
+Audit commits:
+[2a40ffe](https://github.com/mahAnuj/ai-support-bot/commit/2a40ffe) (the four
+API holes),
+[9c2b096](https://github.com/mahAnuj/ai-support-bot/commit/9c2b096) (loud
+failures and document fencing),
+[80908c7](https://github.com/mahAnuj/ai-support-bot/commit/80908c7) (the
+removed claims),
+[014099d](https://github.com/mahAnuj/ai-support-bot/commit/014099d) (local
+embeddings and the match score),
+[6fd93dd](https://github.com/mahAnuj/ai-support-bot/commit/6fd93dd) (the
+retention correction), and the deploy fixes
+[a11ed4c](https://github.com/mahAnuj/ai-support-bot/commit/a11ed4c),
+[d4aeaab](https://github.com/mahAnuj/ai-support-bot/commit/d4aeaab),
+[4c8949c](https://github.com/mahAnuj/ai-support-bot/commit/4c8949c),
+[08fe1da](https://github.com/mahAnuj/ai-support-bot/commit/08fe1da) and
+[db15260](https://github.com/mahAnuj/ai-support-bot/commit/db15260).
+
+Later features:
+[67f7d5f](https://github.com/mahAnuj/ai-support-bot/commit/67f7d5f) (own
+database),
+[c53498e](https://github.com/mahAnuj/ai-support-bot/commit/c53498e) (allowed
+sites and own model),
+[6e91402](https://github.com/mahAnuj/ai-support-bot/commit/6e91402) (own
+backend).
+
+Background:
+
+- [OWASP Top 10 for LLM Applications: LLM01 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- [OWASP: Server Side Request Forgery](https://owasp.org/www-community/attacks/Server_Side_Request_Forgery)
+- [pgvector](https://github.com/pgvector/pgvector)
+- [NIST SP 800-38D: GCM](https://csrc.nist.gov/pubs/sp/800/38/d/final)
+- [NIST glossary: least privilege](https://csrc.nist.gov/glossary/term/least_privilege)
+- [MDN: the `Origin` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Origin)
+- [Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+- [Hugging Face: getting started with embeddings](https://huggingface.co/blog/getting-started-with-embeddings)
+- [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) and [transformers.js](https://huggingface.co/docs/transformers.js/index)
+- [Jest](https://jestjs.io/) and the [Node.js test runner](https://nodejs.org/api/test.html)

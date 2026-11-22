@@ -1,0 +1,370 @@
+---
+title: "LLM01: Prompt Injection, real attacks and how to limit them"
+description: "What prompt injection is, four real attacks from Microsoft Copilot to Lenovo's chatbot, and eight controls a small team can ship when no fix is complete."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 1
+---
+
+In January 2025, researchers at Aim Labs showed Microsoft that one ordinary-looking
+email could make Microsoft 365 Copilot send a company's data to an outside server
+([The Hacker News](https://thehackernews.com/2025/06/zero-click-ai-vulnerability-exposes.html);
+[arXiv:2509.10540](https://arxiv.org/abs/2509.10540)).
+The victim never opened the email. They asked Copilot a normal work question, Copilot
+read the attacker's email while gathering context, and followed the instructions in it.
+Microsoft fixed it on the server side and gave it a critical rating.
+
+Nothing in that chain was a buffer overflow or a stolen password. It was text, placed
+where a model would read it. That is prompt injection, and it sits first on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10) for a reason: any
+product that feeds a model text from customers, documents, email or the web is
+exposed to it, and that describes most AI features a startup ships.
+
+*Prompt injection* is an attack where text the model reads, typed by a user or
+hidden in a document, email or web page, is treated as an instruction and
+overrides what the application told the model to do. No known method fully
+prevents it, so the control that matters most is limiting what a hijacked model
+can reach and do, enforced in code outside the model.
+
+## What is prompt injection?
+
+A language model receives one long stream of text and predicts what comes next. Your
+instructions, the user's message, a retrieved document and a web page all arrive in
+that same stream. The model has no reliable way to tell which parts are orders from
+you and which parts are just material to work with.
+
+Prompt injection is what happens when someone writes text that the model treats
+as an instruction. Your
+[system prompt](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/system-message)
+(the standing instructions an app sends ahead of every conversation) is only
+another piece of text in the stream, so it can be argued with, overridden or ignored.
+
+There are two routes in:
+
+- **Direct injection** is typed by the user. "Ignore your previous instructions and…"
+  is the cartoon version; real attacks are usually more patient.
+- **Indirect injection** arrives inside content the model is given to read: a web
+  page it summarises, a PDF a customer uploads, an email, a support ticket, a
+  document pulled in by
+  [retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+  (RAG, where the app searches a document store and pastes the best matches into the
+  prompt). The person using the product may never see the planted text.
+
+A related term is *jailbreaking*: injection aimed at making the model drop its safety
+training, rather than hijacking the job your app gave it. The
+[Wikipedia article on prompt injection](https://en.wikipedia.org/wiki/Prompt_injection)
+covers how the two overlap and differ.
+
+The uncomfortable part is the one OWASP's own 2025 entry concedes: it is unclear
+whether any method fully prevents prompt injection. **Plan for the attack to
+work sometimes.** Better system prompts, fine-tuning, RAG and filters all reduce
+how often it works. None of them reduce it to zero. That changes
+the engineering question from "how do we stop it" to "what happens on the day it
+works".
+
+## How do prompt injection attacks work?
+
+Researchers named the indirect form in a February 2023 paper,
+[Not what you've signed up for](https://arxiv.org/abs/2302.12173), which observed
+that LLM-integrated apps blur data and instructions. The attacks that followed fall
+into a few recognisable shapes.
+
+**Talking the app out of its job.** A user tells a support bot to ignore its rules,
+answer off-topic, adopt a new persona or produce output in a format the app never
+expected, such as raw HTML. If the app trusts that output, the injection reaches
+whatever consumes it.
+
+**Smuggling data out through the answer.** Planted text tells the model to build a
+link or image URL with private data in its query string. When the chat interface
+renders the answer, the browser fetches the URL and the data lands in the attacker's
+server logs. If the image loads automatically, no one has to click anything.
+
+**Poisoning what the model retrieves.** In a RAG system, anyone who can edit a
+document the assistant indexes can put words in the assistant's mouth. Every user
+whose question pulls that document in gets the steered answer.
+
+**Hijacking tools.** Once a model can take actions through
+[tool calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview)
+(the model returns a structured request and your code runs it), an injected
+instruction can turn into a real email sent, record changed or payment made. That
+is the territory of [LLM06: Excessive Agency](/blog/owasp-llm06-excessive-agency).
+
+**Getting past filters.** Instructions split across several inputs, written in
+another language, encoded, or followed by a string of nonsense characters that was
+optimised by a computer to tip the model into compliance. Keyword filters are weak
+against all of these.
+
+Simon Willison's
+[lethal trifecta](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/) is a
+useful way to see where the danger concentrates: a system that has access to private
+data, reads untrusted content, and can send data out is exposed to theft by anyone
+who can get text in front of it. Remove any one of the three and the worst outcome
+shrinks considerably.
+
+## Real prompt injection incidents
+
+### One email turned Microsoft 365 Copilot into a data leak
+
+**Researcher disclosure** · disclosed June 2025
+
+**How it happened.**
+
+1. Microsoft 365 Copilot answers questions by retrieving content the user can see,
+   including their email, and passing it to the model as context.
+2. The attacker sent an email whose hidden instructions were worded like a normal
+   business request. According to the case study by Reddy and Gujral, that wording
+   let it slip past Microsoft's cross-prompt injection (XPIA) classifier, and the
+   email also told Copilot not to mention it.
+3. Later the victim asked Copilot an ordinary question. Retrieval pulled the
+   attacker's email into the same context as the victim's sensitive data.
+4. Copilot stripped normal inline Markdown links from answers, but not
+   [reference-style links](https://spec.commonmark.org/0.31.2/#link-reference-definitions),
+   where the URL is defined separately from the link text. The attacker used that
+   form to get a URL carrying the data into the answer.
+5. Written as a reference-style *image*, the URL was fetched automatically when the
+   answer rendered, so the victim did not have to click.
+6. The page's [Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP)
+   (a browser rule listing which domains may serve images and scripts) blocked
+   unknown domains. The attack routed the request through a Microsoft Teams URL
+   preview service that was on the allowed list and fetched the attacker's URL on
+   the victim's behalf.
+
+**Who was affected.** Microsoft 365 Copilot users until Microsoft's server-side fix
+in May 2025. Aim Labs reported it to Microsoft in January 2025 and published in June.
+According to The Hacker News, Microsoft said no customer action was needed and there
+was no evidence of exploitation in the wild.
+
+**What was exposed.** Potentially anything in Copilot's context for that user,
+such as mail and files. Aim Security described the chains as able to
+"automatically exfiltrate sensitive and proprietary information" from Copilot's
+context. It was assigned
+[CVE](https://en.wikipedia.org/wiki/Common_Vulnerabilities_and_Exposures)-2025-32711
+(a CVE is a public ID for a known vulnerability). Microsoft scored it 9.3, critical,
+on the [CVSS](https://www.first.org/cvss/) severity scale; NIST's National
+Vulnerability Database scored it 7.5, high.
+
+**Lessons.** An outsider who can send your user an email can write to your
+assistant's context. Classifiers that look for injection-shaped phrasing miss
+instructions that read like business requests. Every channel that can carry data
+out needs closing, including auto-loading images and less common Markdown syntax,
+and a domain allowlist is only as strong as the most permissive service on it.
+
+**Source:** [NVD: CVE-2025-32711](https://nvd.nist.gov/vuln/detail/CVE-2025-32711) ·
+[Reddy and Gujral, EchoLeak case study (arXiv:2509.10540)](https://arxiv.org/abs/2509.10540) ·
+[The Hacker News, 12 June 2025](https://thehackernews.com/2025/06/zero-click-ai-vulnerability-exposes.html)
+
+### Lenovo's support chatbot was talked into stealing agents' session cookies
+
+**Researcher disclosure** · disclosed August 2025
+
+**How it happened.**
+
+1. Lena is Lenovo's customer support chatbot, which CSO Online reported was built on
+   OpenAI's GPT-4. Its replies are shown as web content, including to Lenovo's human
+   support agents.
+2. Researchers at Cybernews sent a single prompt of about 400 characters. It opened
+   with a genuine product question, so it looked like a normal customer request.
+3. The rest of the prompt asked for the answer in HTML and included an image tag
+   designed to fail to load, with code set to run when it did, the classic
+   `<img src=x onerror=…>` pattern.
+4. The chatbot complied and wrote the markup into its answer.
+5. The support interface did not sanitise the model's output, so when an agent
+   viewed the conversation the code ran in their browser and sent their
+   [session cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies)
+   (the token that keeps a user logged in) to the researchers.
+
+**Who was affected.** Lenovo's human support agents were the target. Lenovo told CSO
+Online it "promptly assessed the risk and implemented corrective actions" after the
+researchers' disclosure. No abuse in the wild was reported.
+
+**What was exposed.** With a stolen session cookie, an attacker can enter the
+support system as that agent without a password. The researchers also warned of
+follow-on risks such as altered support pages and keyloggers; those were warnings,
+not demonstrated attacks. The underlying bug is ordinary
+[cross-site scripting](https://community.owasp.org/attacks/xss) (XSS: getting a
+trusted site to deliver an attacker's script to other users), delivered through a
+model.
+
+**Lessons.** One message was enough to make the bot produce output its builders
+never intended, so the rules have to be enforced outside the model. Treat model
+output like any other untrusted input and escape it before a browser renders it.
+Staff screens that show chatbot transcripts are part of the attack surface, not
+just the customer's chat window. The rendering half of this bug is covered in
+[LLM05: Improper Output Handling](/blog/owasp-llm05-improper-output-handling).
+
+**Source:** [CSO Online, 20 August 2025](https://www.csoonline.com/article/4043005/lenovo-chatbot-breach-highlights-ai-security-blind-spots-in-customer-facing-systems.html)
+
+### ConfusedPilot: an insider's document rewrote Copilot's answers
+
+**Research demonstration** · disclosed August 2024
+
+**How it happened.**
+
+1. Researchers from the University of Texas at Austin and Symmetry Systems tested
+   Copilot for Microsoft 365 with SharePoint as the document store, using a
+   generated test corpus.
+2. Their attacker was an ordinary employee who could save a document somewhere
+   Copilot indexed, with no access to the victim's own files.
+3. In the paper's scenario, the attacker writes a fake sales memo with lower figures
+   than the real one. On its own, Copilot cited both memos, which would look odd.
+4. So the fake memo also carries a line telling the model it overrides all other
+   documents. Copilot then answered only from the fake figures, and the executive
+   asking got a recommendation built on false data.
+5. A second variant added a line asking not to be cited, so the wrong answer
+   arrived with no source link at all.
+6. Copilot answered from a cached index. After the attacker deleted the fake memo,
+   its figures kept appearing in answers for roughly a minute in the paper's tests.
+
+**Who was affected.** No real victims; this was a controlled study. The risk applies
+to any organisation running RAG over a document store that many people can edit.
+
+**What was exposed.** Answers could be silently replaced with false information.
+The paper also showed that a planted "confidential" line made Copilot refuse
+related questions, blocking the genuine documents too, and that a document shared
+by mistake and then revoked could still surface briefly through the cache.
+
+**Lessons.** In a RAG system, write access to the knowledge base is write access to
+the assistant's answers. Retrieved text should be treated as data and the system
+tested against documents that try to give orders. Always show sources, so a reader
+can notice when an answer rests on one odd file.
+
+**Source:** [RoyChowdhury et al., ConfusedPilot (arXiv:2408.04870)](https://arxiv.org/abs/2408.04870)
+
+### A string of gibberish jailbroke ChatGPT, Bard and Claude
+
+**Research demonstration** · disclosed July 2023
+
+**How it happened.**
+
+1. Chat models are trained to refuse harmful requests. Until 2023, getting around
+   that mostly meant hand-written jailbreak prompts that were slow to find and
+   unreliable.
+2. Zou, Wang, Carlini, Nasr, Kolter and Fredrikson instead appended a suffix of
+   odd-looking tokens to the harmful request.
+3. The suffix was found automatically, using a mix of greedy and gradient-based
+   search on open models, with the goal of making the model start its reply with
+   agreement rather than a refusal. The method is often called GCG.
+4. They optimised one suffix across many prompts and two open models, Vicuna-7B and
+   13B, so the same string worked on many different requests.
+5. Suffixes built only on open models also worked against the public interfaces of
+   ChatGPT, Bard and Claude, and open models such as LLaMA-2-Chat, Pythia and Falcon.
+
+**Who was affected.** No victims; this was published research tested against
+several vendors' models.
+
+**What was exposed.** Safety training could be bypassed automatically to produce
+content the models were meant to refuse. This is a jailbreak of model behaviour,
+not a data breach.
+
+**Lessons.** Input that looks like noise to a person can still steer a model
+reliably, so filters matching known bad phrases will miss attacks produced by
+optimisation. Weaknesses found on open models carried over to closed ones, so
+keeping a model private is not a defence. Model-level safety needs to be combined
+with checks on output and limits on what the model can do.
+
+**Source:** [Zou et al., Universal and Transferable Adversarial Attacks on Aligned Language Models (arXiv:2307.15043)](https://arxiv.org/abs/2307.15043)
+
+## How can a small team limit prompt injection?
+
+Every item below reduces risk. None of them removes it, because nothing known today
+removes prompt injection. The goal is that a hijacked model can do little, reach
+little, and gets caught.
+
+1. **Limit what a hijacked model can do.** List every tool and data source the model
+   can reach and cut it to what the feature needs, following
+   [least privilege](https://csrc.nist.gov/glossary/term/least_privilege) (each
+   component gets only the access its job requires). Keep API keys in your
+   application code, never in the prompt, and scope them per user so the model can
+   only touch what the person in the session could already see. A support bot that
+   can read one customer's orders is a much smaller prize than one with a database
+   connection.
+
+2. **Break the trifecta where you can.** If a feature reads untrusted content and
+   sees private data, take away its ability to send data out: no outbound fetches,
+   no free-form URLs in answers. If it must browse, keep private data out of that
+   context.
+
+3. **Keep untrusted content separate and labelled.** Put retrieved documents, emails
+   and web pages in clearly delimited blocks, tell the model they are reference
+   material, and record where each came from. This lowers the hit rate; it is not a
+   boundary. Restrict who can write to the stores your RAG pipeline indexes, and
+   show sources with every answer so a reader can check them.
+
+4. **Require approval for high-risk actions.** Anything that sends a message, moves
+   money, deletes data or changes permissions should stop and show a person exactly
+   what is about to happen, with the parameters, before it runs. Enforce the gate in
+   code, not in the prompt. The read-only and approval patterns in
+   [From read-only to governed](/blog/from-read-only-to-governed) show what that
+   looks like for a real tool server.
+
+5. **Sanitise model output before rendering it.** Escape HTML, render Markdown with
+   a strict allowlist, and either strip images and links from model output or
+   rewrite them to domains you control. Set a tight Content Security Policy on
+   every page that shows model output, including internal admin and support
+   screens. Doing this alone would likely have blunted both the Copilot and Lenovo
+   attacks.
+
+6. **Validate structured output in ordinary code.** If the model is supposed to
+   return JSON with three fields, parse it, check types and ranges, and reject
+   anything else. Never pass model output straight into a shell, a SQL query or an
+   `eval`.
+
+7. **Red-team it, on a schedule.** Run your own
+   [red team](https://csrc.nist.gov/glossary/term/red_team) exercise (people
+   authorised to attack the system the way an adversary would) before launch and
+   after every change to prompts, tools or data sources. Upload documents with
+   hidden instructions, send emails with planted text, try encodings and other
+   languages. Treat anyone who can get text in front of the model as a user of
+   your system, and keep the prompts that worked as regression tests.
+
+8. **Log enough to notice.** Record which documents were retrieved, which tools were
+   called and with what arguments. When something odd happens, that log is how you
+   find the planted text.
+
+If you would rather have someone else map it, I
+[review where untrusted text can reach your model's tools and data](/contact),
+and which of these controls are missing.
+
+## FAQ
+
+**Can prompt injection be fully prevented?**
+No. OWASP's 2025 entry concedes it is unclear whether any method fully prevents
+it. Better prompts, fine-tuning, RAG and filters reduce how often it works; none
+reduce it to zero. Design for the day it works.
+
+**What is the difference between direct and indirect prompt injection?**
+Direct injection is typed by the user. Indirect injection arrives inside content
+the model is given to read, such as a web page, an uploaded PDF, an email or a
+retrieved document, and the person using the product may never see it.
+
+**Is prompt injection the same as jailbreaking?**
+Not quite. Jailbreaking is injection aimed at making the model drop its safety
+training, as in the
+[GCG suffix research](https://arxiv.org/abs/2307.15043). Prompt injection more
+broadly hijacks the job your app gave the model.
+
+**What is the lethal trifecta?**
+Simon Willison's term for a system that has access to private data, reads
+untrusted content and can send data out. Such a system is exposed to theft by
+anyone who can get text in front of it; removing any one of the three shrinks
+the worst outcome
+([Willison, 2025](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)).
+
+## References
+
+- [OWASP: LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- [Series overview: the OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10)
+- [NIST NVD: CVE-2025-32711](https://nvd.nist.gov/vuln/detail/CVE-2025-32711)
+- [Reddy and Gujral, EchoLeak: The First Real-World Zero-Click Prompt Injection Exploit in a Production LLM System (arXiv:2509.10540)](https://arxiv.org/abs/2509.10540)
+- [The Hacker News: Zero-Click AI Vulnerability Exposes Microsoft 365 Copilot Data (12 June 2025)](https://thehackernews.com/2025/06/zero-click-ai-vulnerability-exposes.html)
+- [CSO Online: Lenovo chatbot breach highlights AI security blind spots (20 August 2025)](https://www.csoonline.com/article/4043005/lenovo-chatbot-breach-highlights-ai-security-blind-spots-in-customer-facing-systems.html)
+- [RoyChowdhury et al., ConfusedPilot: Confused Deputy Risks in RAG-based LLMs (arXiv:2408.04870)](https://arxiv.org/abs/2408.04870)
+- [Zou et al., Universal and Transferable Adversarial Attacks on Aligned Language Models (arXiv:2307.15043)](https://arxiv.org/abs/2307.15043)
+- [Greshake et al., Not what you've signed up for: indirect prompt injection (arXiv:2302.12173)](https://arxiv.org/abs/2302.12173)
+- [Simon Willison: The lethal trifecta for AI agents (16 June 2025)](https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
+([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent
+commentary, not endorsed by OWASP.

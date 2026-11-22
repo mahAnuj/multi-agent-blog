@@ -1,0 +1,413 @@
+---
+title: "Autonomous AI agents that grow an app: the loop behind shubhagya.com"
+description: "Fifteen Claude Code agents, eighteen GitHub workflows and one growth objective. What the loop does, what it shipped in 25 days, how it is monitored, and what still breaks."
+date: 2026-11-02
+tags: ["agents", "claude-code", "growth", "monitoring", "governance"]
+---
+
+Most writing about AI coding agents measures them by output: pull requests
+opened, lines written, tickets closed. That treats more code as the goal. For a
+product that has to win users, more code is only a cost.
+
+astro-ai, the codebase behind [shubhagya.com](https://shubhagya.com), runs a
+team of fifteen Claude Code agents on GitHub Actions, and they are pointed at
+one sentence instead of a backlog:
+
+> Move the 6–20 position band into the top 5 on the ten highest-impression
+> queries.
+
+That is the whole objective. Pages that Google ranks at positions 6 to 20 are
+one or two places off page one, so moving them up needs no new content, only
+better pages. The north star behind it is organic sessions.
+
+This post walks through how that loop works: how it measures, decides, builds,
+verifies, ships and scores its own work against the objective. It also covers
+how it is monitored, what it shipped between 8 October and 1 November 2026, and
+the plumbing failures that still keep it from running fully on its own. The
+[agent cycle page](/agent-cycle) has the interactive map, if you want to see it
+first.
+
+## Start from an objective, not a backlog
+
+Six groups of agents run on separate schedules and never see each other's
+working memory. Without a shared target, each one maximises its own output, and
+[`OBJECTIVE.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/OBJECTIVE.md)
+names the local optima it refuses:
+
+- **Analytics** must not report only what moved. A ship that did nothing is
+  the most useful finding of a cycle.
+- **Growth** must not file issues to look productive. Discovery is capped at
+  30 issues a cycle, and an issue without a complete evidence block is not work.
+- **Engineering** must not ship volume. *"A merged PR that moved no metric and
+  broke nothing is a neutral outcome, not a good one."*
+- **Design** must not redesign a page that already ranks without a CTR or
+  funnel number to beat.
+
+There is also a rule for when growth and accuracy collide, which matters for a
+site making astrological claims: *"Authenticity wins on the claim; traffic wins
+on the roadmap."* A claim that cannot be sourced is corrected or qualified, even if
+the page performs.
+
+**The objective is what turns a coding agent into a growth system.** It decides
+what gets built, and it is what every ship is later scored against.
+
+## The loop, stage by stage
+
+The agents are [Claude Code subagents](https://code.claude.com/docs/en/sub-agents),
+each with its own prompt, tools and permissions, run by
+[GitHub Actions](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows)
+on a schedule. The scheduled loops never talk to each other. Every handoff
+between them is something durable, like an issue comment, a label or a commit,
+which the [merge-authority post](/blog/merge-authority-in-a-workflow) covers in
+detail. Inside a single delivery cycle, the cycle hands work to its engineer and
+QA subagents directly.
+
+<ArchDiagram
+  title="One turn of the growth loop"
+  stages={[
+    { name: "Measure", detail: "Fetch GA4 and Search Console; the analyst reports the band and scores past ships", meta: "daily, collectors 7 more times · agent-measure" },
+    { name: "Discover", detail: "product-manager reads the analyst first, then files issues with a complete evidence block", meta: "weekly · agent-discover" },
+    { name: "Prioritise", detail: "project-manager ranks the backlog and closes what is already fixed or stale", meta: "weekly · agent-prioritise" },
+    { name: "Build and QA", detail: "Probe production where the issue has a repro, build, then a separate QA agent writes a verdict", meta: "6× a day since 1 Nov · agent-work", emphasis: true },
+    { name: "Merge", detail: "A workflow merges on evidence: green gates, a qa-pass bound to the head commit, protected paths cleared", meta: "on events + sweep · agent-merge" },
+    { name: "Deploy and verify", detail: "Cloud Build deploys main; a sweep checks the live site and /health reports the commit serving", meta: "on push · verify-production" },
+    { name: "Close and score", detail: "close-on-evidence closes the issue; weeks later the analyst scores it against its own thesis", meta: "close-on-evidence · analyst" },
+  ]}
+  caption="Each stage reads what the previous one wrote. The score at the end feeds the next round of discovery, which is what makes it a loop rather than a pipeline."
+/>
+
+Three parts of it carry most of the weight.
+
+### Every issue states what it should move
+
+Discovery may file an issue only with a complete evidence block, which
+[`discover.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/.claude/commands/discover.md)
+spells out: GA4 or Search Console numbers with an explicit window, the
+competing page and keyword, a source citation for any astrological claim,
+measured token cost, a reproduction, a *thesis* and the *metric* that will judge
+it.
+
+The thesis and metric are the important part. They are written before anything
+is built, so the outcome can be checked against a prediction rather than
+against a story told afterwards.
+
+### Production is probed before anything is built
+
+When an issue carries an executable reproduction, a cycle tests it against the
+live site first. `validate_issue.py` sends five varied probes to production. If
+none reproduces the problem, the cycle closes the issue with all five samples in
+the comment instead of building a fix for something that is not broken.
+
+Most of the backlog has no executable repro, and then nothing is probed. The
+cycle has to establish the premise some other way before building, and an issue
+it could not probe is never closed on that basis.
+
+### The loop grades its own ships, misses included
+
+The analyst runs daily and scores every closed issue that carries a `thesis:`
+and a `metric:` line. Its 2 November report found 40 such issues, of which only
+6 had a metric GA4 or Search Console could read. Three of the six show the
+range:
+
+- **#311**, rewriting titles and meta descriptions on four band pages, predicted
+  a combined click-through rate of at least 1.5%. It measured 0.81%. The report
+  calls it a miss and tells the loop not to file "rewrite more titles" on the
+  strength of the idea.
+- **#276**, a call to action placed early on one article, crossed its bar of
+  1.20 pages per session, at 1.47 on 38 sessions. The analyst marked it
+  provisional, because the window mixes days before and after the deploy.
+- **#329** had too few sessions to read either way, and the report says the
+  metric itself is probably unscoreable.
+
+That is the behaviour the objective asks for, and it is rare in human teams too.
+**A loop that cannot report its own misses has no way to stop repeating them.**
+
+## How it is monitored: the ops dashboard
+
+A loop that runs while nobody watches needs a page that tells the truth about
+it. astro-ai has one at `/admin/ops`, built from the measurement files the loops
+commit, plus three tiles fetched live from GitHub.
+
+The screenshots below are a local render of that page from the repository at
+[`eb1277a`](https://github.com/mahAnuj/astro-ai/tree/eb1277afa8d9dda5bee332a400956d442aa6e101),
+taken on the morning of 2 November. I removed one banner that only appears on a
+local render, which has no production LLM statistics. Everything else is as the
+page draws it. Select a screenshot to open it at full size.
+
+<Figure caption="The top of /admin/ops: the objective, the last cycle, and today's live tiles. '#None' is the page's own rendering of a cycle that worked a pull request rather than an issue.">
+  <a href="/blog/autonomous-growth-loop/ops-overview.webp">
+  <img
+    src="/blog/autonomous-growth-loop/ops-overview.webp"
+    alt="Ops dashboard header showing the objective, the last cycle opening PR 663, and tiles: 8 PRs shipped today (6 by the loop, 2 by a session), 3 issues filed, 0 failed runs, and an open backlog of 132 with 9 blocked on a human."
+    width="1600"
+    height="709"
+    loading="lazy"
+  />
+  </a>
+</Figure>
+
+The first tile reads 8 pull requests merged that day, 6 by the loop and 2 by a
+session run by hand. The backlog tile carries the number that matters most for
+autonomy: 9 issues blocked on a human.
+
+<Figure caption="The cycle ribbon: every agent-work run from 8 October to 2 November, by hour (IST). Green shipped and merged, amber left a PR open, grey produced nothing, red failed.">
+  <a href="/blog/autonomous-growth-loop/ops-cycle-ribbon.webp">
+  <img
+    src="/blog/autonomous-growth-loop/ops-cycle-ribbon.webp"
+    alt="A timeline of agent-work cycles per day from 8 October to 2 November 2026. Most days show green shipped blocks; 21 to 24 October are almost entirely grey, meaning cycles ran and produced nothing."
+    width="1600"
+    height="1300"
+    loading="lazy"
+  />
+  </a>
+</Figure>
+
+The ribbon is the most useful view on the page, because it shows a stall at a
+glance. From 22 to 24 October (UTC), 13 cycles ran and none picked up any work
+at all. The ribbon shows that something stopped; it does not say why.
+
+The repo's
+[`CLAUDE.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/CLAUDE.md)
+records two faults across the same days. From 21 to 25 October every code pull
+request waited for a human, because the merge workflow selected pull requests
+by branch name. And the steward, the agent that unblocks stalled work, was
+standing down twice a day because its own instructions carried a stale copy of
+that rule. Both were fixed on 25 October, and the ribbon turns green again from
+that day. Which fault caused which grey block, the records cannot say.
+
+<Figure caption="Loop liveness over 30 days, delivery yield for agent-work, which agents spoke, and QA outcomes.">
+  <a href="/blog/autonomous-growth-loop/ops-team-yield.webp">
+  <img
+    src="/blog/autonomous-growth-loop/ops-team-yield.webp"
+    alt="Table of ten scheduled loops with cadence and last run, then delivery yield: 116 cycles, 57 shipped, 36 produced nothing, 16 failed, 49% yield, median cycle 30.6 minutes. QA rounds: 73 issues with a verdict, 61 reached PASS, 32 failed their first submission."
+    width="1600"
+    height="1280"
+    loading="lazy"
+  />
+  </a>
+</Figure>
+
+### What the dashboard was built to catch
+
+The scripts behind it state their main design principle in their header:
+*"The dominant failure in this system is silence, not bad work."* On
+14 October, two of fourteen workflows had a red latest run and one had never run
+at all, and nothing anywhere showed it. So the page reports in a fixed order:
+
+1. **Liveness.** Did each loop run when its schedule said it was due? A loop
+   that was never due is reported as *not due yet*, not as dead.
+2. **Yield.** When it ran, did anything come out?
+3. **Agents.** When nothing came out, which agent stopped?
+
+Two lessons from building it apply to any agent dashboard:
+
+- **A committed snapshot cannot answer "what happened today".** On 18 October
+  the three "today" tiles read 0, 0 and 0 from a file written on the 15th,
+  while five loop runs had failed. Those tiles are now fetched live, and each
+  falls back to the snapshot with a visible label when GitHub cannot be reached.
+- **Zero is not a clean bill of health.** A yield computed over zero runs looks
+  like a perfect 0 out of 0. A comment parser that silently matches 40% of its
+  input looks identical to one that matches all of it, so unmatched comments
+  are counted and shown, never dropped.
+
+One limit is stated in the same header. Per-agent figures are parsed from the
+agents' own comments, so they catch an agent that stops or crashes, but not one
+that writes a confident comment and does nothing. The defence against that is
+the gates, which judge the code rather than the story about it.
+
+## What it shipped, and what it cost
+
+From the delivery records in
+[`measurements/loop.json`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/measurements/loop.json),
+covering 8 October to 1 November 2026:
+
+<MetricRow>
+  <Metric label="Delivery cycles" value="116" />
+  <Metric label="Distinct PRs merged" value="43" featured />
+  <Metric label="Median cycle" value="30.6" unit="min" />
+</MetricRow>
+
+57 cycles ended in a merged pull request, 43 of them distinct, because a second
+cycle often finishes a pull request a first one opened. 36 produced nothing, 16
+failed, 3 left a pull request open, and 4 could not be attributed from their
+own logs. The records list those 4 as unknown rather than guess them from
+timestamps. In the seven days to 1 November, 43 cycles produced 21 distinct
+merged pull requests.
+
+The records say which pull requests merged, not who pressed the button. For
+part of the window, 21 to 25 October, merges waited for a human, as described
+above. And not every cycle was scheduled: until 1 November the delivery loop's
+cron fired at most twice a day, and 69 of the 116 cycles were started on demand,
+by a person, by the steward, or by the workflow that starts QA when a pull
+request goes green.
+
+QA is where much of the value shows. Over the last 30 days 73 issues reached a
+QA verdict, 61 passed, and 32, or 44%, failed their first submission. Those 32
+would otherwise have gone to a site with no staging environment, protected only
+by the automated gates. Most of those rounds are the cycle's own QA step rather
+than a fully independent review, and the repo labels each verdict with which it
+was, because the two do not carry the same weight.
+
+The running cost is small because the design was built around it, the same
+constraint the [free-tier post](/blog/free-tiers-are-a-design-constraint)
+describes:
+
+| Item | Monthly cost | Basis |
+| --- | --- | --- |
+| Claude Max 5x | $100 | Flat subscription that funds every agent run |
+| GitHub Actions | $0 | Public repository |
+| Groq (the app's own LLM) | $0 | Free tier, 8,000 tokens per minute per model |
+| GA4 and Search Console | $0 | Free |
+| OpenAI | unknown | Paid fallback at the end of the app's LLM chain |
+| Google Cloud | unknown | Cloud Run, storage and builds |
+
+GitHub Actions has been free since the repository went public on 12 October.
+The two unknown lines have no figure because nothing in the project reads that
+spend yet, and
+[`cost.json`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/measurements/cost.json)
+records them as unknown rather than zero.
+
+## Did it grow anything?
+
+Search impressions roughly doubled. Across two 28-day windows, Search Console
+shows 15,940 impressions and 173 clicks for 3 to 30 October, against 8,202 and
+86 for the four weeks before.
+
+The analyst does not let the loop take credit for that, and neither will I. Its
+report finds the rise concentrated on three pages and arriving mostly from
+23 October, with average position flat at 6.6 to 7.5 throughout. Diwali falls
+on 8 November, so a seasonal effect cannot be ruled out. Several pull requests
+touched the same pages in the same window, so no single change can be credited.
+And the objective itself is *"not measurable as written"*: it names queries,
+but Google returns query-level data for only 11% of impressions.
+
+So the loop is honest about the thing it is for. It ships steadily, scores what
+it ships, and has not yet shown that it moves the band. **The next useful step
+is fixing the measurement, not shipping more.** Issues are open for
+page-by-day exports and click events, and the objective itself needs rewording
+to something Search Console can actually report.
+
+## What still breaks on the way to full autonomy
+
+The loop is close to running without me. The failures that remain are almost
+never bad code. They are the plumbing between steps, and the pattern is
+consistent: something stops, and nothing says so.
+
+- **A protection rule broke six workflows at once.** `main` gained branch
+  protection on 15 October, and all six workflows that pushed straight to
+  `main` stopped being able to. `agent-measure`, which runs most often, failed
+  about 40 times in six days while the dashboard went on showing 14 October's
+  numbers as current. The weekly ones had not hit it yet. All six now publish
+  through a pull request that merges itself.
+- **Green pull requests stranded.** The merge workflow woke on events, and
+  when the last check finished after the last event, nothing asked again. A
+  30-minute safety sweep was added, and measured gaps of two to seven hours
+  between its runs. The [merge-authority post](/blog/merge-authority-in-a-workflow)
+  has the full account.
+- **A rule copied into prose kept running after the code changed.** After the
+  merge gate stopped caring about branch names, the agents' instructions still
+  said to work only `issue/*` branches. The steward, the agent that unblocks
+  stalled work, read its own prompt and stood down twice a day while green pull
+  requests waited. The same rule lived in six places.
+- **QA waited hours for no reason.** QA ran only inside a delivery cycle, so a
+  pull request that went green waited for the next one. A small workflow,
+  `qa-on-green`, now starts a QA round the moment the gates pass. On
+  1 November it was still skipping four of the five green pull requests open,
+  because it also required a particular branch name. That requirement is gone.
+- **The loop distrusted its own issues.** A safety check treated every bot
+  author as an outsider, including the loop's own GitHub App. 40 of 130 open
+  issues, about 31% of the backlog, could not be worked.
+  [#654](https://github.com/mahAnuj/astro-ai/pull/654) narrowed the exception to
+  exactly one account, and the commit records what that gives up: an outsider's
+  text can now reach a trusted issue in one hop, so an issue body is still
+  treated as data, never as instructions.
+
+### What stays human, by design
+
+Autonomy is not the same as having no limits. Since 1 November an agent called
+`chief` rules on every pull request held for human review, and the list of
+things it may hand back to the owner is closed at five:
+
+1. Authoring a GitHub workflow file, because the agents' token has no
+   permission to push one.
+2. Editing the agents' own definitions, since an agent may not write its own
+   rules.
+3. Granting a scope, a secret or a permission.
+4. A product or revenue decision.
+5. A legal, licensing or privacy commitment.
+
+Irreversible actions, such as deleting subscriber data, still stop and ask.
+The merge itself is performed by a workflow, not by an agent. The QA verdict
+and `chief`'s clearance are agent judgments, but the workflow accepts each one
+only when it is bound to the exact commit being merged and the automated gates
+are green. The [agent teams post](/blog/what-goes-wrong-with-agent-teams)
+explains why that binding matters.
+
+## How to build one for your product
+
+None of this depends on astrology or on astro-ai's size. If you want an agent
+loop that grows a product rather than just producing code, these are the parts
+I would build first.
+
+- **Write one measurable objective** that every agent ranks against, and list
+  the local optima each role must not chase.
+- **Require a thesis and a metric on every issue**, written before the work, so
+  every ship can be scored against a prediction.
+- **Probe production before building.** An issue that does not reproduce is
+  closed, not fixed.
+- **Keep QA separate from the agent that wrote the code.** Here it failed 44%
+  of first submissions.
+- **Put merge authority in a workflow that reads evidence**, and bind every
+  verdict to a commit, so a pass on old code cannot approve new code.
+- **Build monitoring for silence first.** Liveness, then yield, then which
+  agent stopped. Fetch "today" live, and treat a zero as a question.
+- **Grade the outcomes, not the activity**, and publish the misses where the
+  next cycle will read them.
+
+## Where it goes next
+
+The [agent cycle page](/agent-cycle) is a snapshot of the loop as of
+1 November 2026. The loop changes most days, so I will publish an updated view
+as it gets closer to running without a person in it.
+
+If you want a loop like this for your own product, or a review of the agents
+you already run, [get in touch](/contact). Setting up agent workflows with
+guardrails, and monitoring that shows when they stop, is the work I take on.
+
+## FAQ
+
+**Can AI agents grow a product's user base on their own?** They can run the
+loop: measure, decide, build, verify, ship and score. Whether that moves users
+depends on the objective and on measuring it honestly. In astro-ai the loop's
+cycles produced 43 merged pull requests in 25 days, and its own analyst reports
+that they have not yet shown a measurable rise in the target rankings.
+
+**How do you monitor autonomous AI agents?** Start with liveness: did each loop
+run when it was due? Then yield: when it ran, did anything come out? Then which
+agent stopped. astro-ai's ops dashboard reports in that order, fetches today's
+numbers live, and shows a zero as a warning rather than a clean result.
+
+**What does it cost to run fifteen Claude Code agents?** In astro-ai, a $100
+Claude Max subscription funds every agent run, and GitHub Actions minutes are
+free because the repository is public. The app's own LLM calls run on Groq's
+free tier, with a paid OpenAI fallback whose spend is not yet measured.
+
+**What still needs a human?** Five things, by a written rule: authoring
+workflow files, editing the agents' own definitions, granting permissions,
+product or revenue decisions, and legal or privacy commitments. Irreversible
+data operations also stop and ask.
+
+## References
+
+- astro-ai, [`OBJECTIVE.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/OBJECTIVE.md), the objective, the team scoring and the local optima each team must refuse
+- astro-ai, [`measurements/latest.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/measurements/latest.md), the 2026-11-02 analyst report: band status, post-ship scores and confounds
+- astro-ai, [`measurements/loop.json`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/measurements/loop.json) and [`cost.json`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/measurements/cost.json), delivery records and running costs
+- astro-ai, [`scripts/collect_agent_performance.py`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/scripts/collect_agent_performance.py), the liveness, yield and agent model behind the dashboard
+- astro-ai, [`src/astro_ai/routes/admin.py`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/src/astro_ai/routes/admin.py), the `/admin/ops` route and why its "today" tiles are fetched live
+- astro-ai, [`.claude/commands/discover.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/.claude/commands/discover.md) and [`agent-cycle.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/.claude/commands/agent-cycle.md), the evidence block and the production probe
+- astro-ai, [`CLAUDE.md`](https://github.com/mahAnuj/astro-ai/blob/eb1277afa8d9dda5bee332a400956d442aa6e101/CLAUDE.md), the branch-protection breakage, the stranded and stalled pull requests, `qa-on-green`, and the 2026-11-01 grant to `chief` with its closed list
+- astro-ai, [#654](https://github.com/mahAnuj/astro-ai/pull/654), letting the loop work the issues it filed itself
+- Anthropic, [Claude Code subagents](https://code.claude.com/docs/en/sub-agents)
+- GitHub, [About workflows](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows)
+- [AI agent pull requests: who holds merge authority](/blog/merge-authority-in-a-workflow), the companion post on the merge workflow
+- [The agent cycle](/agent-cycle), the interactive map of all fifteen agents and eighteen workflows

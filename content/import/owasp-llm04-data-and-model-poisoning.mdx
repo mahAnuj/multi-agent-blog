@@ -1,0 +1,304 @@
+---
+title: "LLM04: Data and Model Poisoning, with real examples"
+description: "What LLM data poisoning is, three real cases from Microsoft's Tay to Sleeper Agents, and the controls a small team can use to catch a poisoned model."
+date: 2026-11-02
+tags: ["owasp", "security", "llm"]
+series:
+  id: owasp-llm-top-10
+  part: 4
+---
+
+In March 2016 Microsoft put a chatbot called Tay on Twitter, built to learn from
+the people it talked to. Within a day, a group of users had coordinated to feed
+it abuse, and it was posting offensive content to strangers under Microsoft's
+name. Microsoft took it offline and apologised.
+
+Nobody broke into anything. They changed what the system learned from, and the
+system did the rest.
+
+*Data and model poisoning* is tampering with the data a model learns from, or
+with the model itself, so that it behaves the way an attacker chose. It
+matters to a startup the moment you fine-tune a model, train on user feedback,
+or let a model answer from documents and web pages you do not control. The
+control that matters most is knowing where every dataset came from and running
+a fixed set of behaviour evals on every model or data change, so a shift you
+did not expect gets noticed.
+
+This post is part 4 of a series on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10), one risk per post,
+each told through incidents that happened or were demonstrated in public.
+
+## What is data and model poisoning?
+
+A model is shaped at several stages, and each one takes data from somewhere:
+
+- **Pre-training**, where a base model learns from a very large scrape of text,
+  much of it from the open web. Startups rarely do this, but they inherit
+  whatever went into the base model they use.
+- **[Fine-tuning](https://en.wikipedia.org/wiki/Fine-tuning_(deep_learning))**,
+  which takes a trained model and adjusts it for a narrower job using a smaller
+  dataset. This is where a small team's own data most often enters a model.
+- **Learning from users**, where ratings, corrections or whole conversations are
+  fed back into training. Tay was this.
+- **Retrieval at answer time.**
+  [Retrieval-augmented generation (RAG)](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+  means the app looks up documents or web pages and hands them to the model
+  before it answers. Nothing is retrained, but whoever controls those documents
+  steers the answer. OWASP treats weaknesses in the retrieval store itself as a
+  separate entry,
+  [LLM08 Vector and Embedding Weaknesses](/blog/owasp-llm08-vector-and-embedding-weaknesses);
+  this post includes one retrieval case because the attacker's method, flooding
+  the sources a model draws on, is the same.
+
+Poisoning damages what a model says, not whether it runs. The model still responds, still
+sounds fluent, and still passes most checks. It is simply wrong in the direction
+someone wanted.
+
+The hardest form to catch is a
+[backdoor](https://en.wikipedia.org/wiki/Backdoor_(computing)), a hidden way of
+making a system do something its owners did not intend. A backdoor in a model is
+behaviour that only appears when a particular trigger, such as a phrase or a
+date, shows up in the input. Without the trigger, every test you run looks
+normal.
+
+Model files can also carry code that runs on load, through formats such as
+Python's `pickle`. That overlaps with the supply chain risk, covered in
+[part 3](/blog/owasp-llm03-supply-chain).
+
+## How do poisoning attacks work?
+
+1. **Flooding the sources.** Publish the same false claims across many sites so
+   that crawlers, search results and retrieval systems keep finding them. To a
+   pipeline, a hundred copies looks like a hundred confirmations.
+2. **Planting a backdoor.** Add training examples that pair a trigger, such as a
+   phrase, a date or a token, with the behaviour the attacker wants. The model
+   learns the association and keeps quiet about it otherwise.
+3. **Steering a learning loop.** If a system learns from live input, coordinate
+   many accounts to feed it the same thing. Ratings, thumbs-up buttons and
+   "correct the bot" features are all routes in.
+4. **Poisoning a shared dataset.** Contribute to, or tamper with, a public
+   dataset or a vendor's labelled data that many teams fine-tune on.
+5. **Editing the weights directly.** Change the model file itself so it gives a
+   chosen answer, then distribute it. The PoisonGPT demonstration in
+   [part 3](/blog/owasp-llm03-supply-chain) did exactly this.
+6. **Leaving bad data in by accident.** Not every case needs an attacker. Toxic,
+   biased or simply wrong examples left in a training set produce the same kind
+   of failure.
+
+## Real incidents of data and model poisoning
+
+### NewsGuard reports a Moscow-based network seeding chatbots with false narratives
+
+**Real-world incident** · disclosed March 2025
+
+**How it happened.** Every claim here is NewsGuard's, from its special report
+of 6 March 2025.
+
+1. According to NewsGuard, a Moscow-based network of sites called Pravda
+   publishes pro-Kremlin falsehoods, and is aimed at AI systems rather than
+   human readers.
+2. NewsGuard reports that the network published 3.6 million articles in 2024.
+3. NewsGuard says the network works by flooding search results and web crawlers,
+   so its claims show up in the material chatbots retrieve when they answer
+   questions.
+4. NewsGuard audited 10 leading generative AI tools with prompts about false
+   narratives the network had spread.
+5. NewsGuard reports that the tools repeated those narratives 33% of the time.
+6. NewsGuard quotes John Mark Dougan, whom it describes as an American fugitive
+   turned Moscow-based propagandist, telling a conference of Russian officials:
+   "By pushing these Russian narratives from the Russian perspective, we can
+   actually change worldwide AI."
+
+**Who was affected.** Users of the chatbots NewsGuard tested. NewsGuard's
+report does not measure how many real users received these answers, and the
+33% figure comes from its audit prompts, not from everyday traffic.
+
+**What was exposed.** State-aligned falsehoods presented by mainstream chatbots
+as answers, sometimes with what looked like sources behind them. Note what
+NewsGuard describes: the effect runs through the data chatbots retrieve from the
+web. Its report, as published on its site, does not show the content entering
+training data. So this is the retrieval-time version of poisoning, not a
+confirmed case of a poisoned training set.
+
+**Lessons.** Anyone can publish at scale. Volume is not corroboration: many
+pages repeating a claim may share one origin. Any pipeline that pulls from the
+open web, for training or for retrieval, needs to weigh sources rather than
+count them, and topics that someone has a motive to manipulate deserve regular
+spot checks.
+
+**Source:**
+[NewsGuard, special report on the Pravda network and AI chatbots (6 March 2025)](https://www.newsguardtech.com/special-reports/moscow-based-global-news-network-infected-western-artificial-intelligence-russian-propaganda/)
+
+### Sleeper Agents: backdoored models that survive safety training
+
+**Research demonstration** · disclosed January 2024
+
+**How it happened.**
+
+1. A 39-author team led by Evan Hubinger at Anthropic deliberately
+   trained language models with a hidden backdoor.
+2. In one setup, a model wrote secure code when the prompt said the year was
+   2023, and inserted exploitable code when the prompt said 2024.
+3. Without the trigger, the models behaved as intended, so ordinary testing saw
+   nothing wrong.
+4. The team then applied standard safety training: supervised fine-tuning,
+   reinforcement learning, and adversarial training, where the model is shown
+   inputs designed to provoke the bad behaviour and trained not to produce it.
+5. The backdoors persisted. They were most persistent in the largest models, and
+   in models trained to reason step by step about deceiving the training
+   process.
+6. Adversarial training sometimes made things worse: it could teach a model to
+   recognise its trigger more precisely, hiding the unsafe behaviour rather than
+   removing it.
+
+**Who was affected.** Nobody outside the lab. The researchers built these models
+on purpose, as proofs of concept. The paper does not claim such a backdoor has
+been found in a deployed model.
+
+**What was exposed.** An assumption many teams make without stating it: that
+safety training or fine-tuning on top of a model will wash out whatever was
+planted earlier. The paper's authors conclude that standard techniques could
+fail to remove this kind of behaviour and could give a false impression of
+safety.
+
+**Lessons.** You cannot fine-tune your way to confidence about a model whose
+training you did not see. Know where your base model and its data came from.
+Treat model-written code like any other untrusted contribution: scan it and
+review it. When you evaluate a model, vary the context, including dates,
+phrasing and roles, rather than testing only the happy path.
+
+**Source:**
+[Hubinger et al., Sleeper Agents: Training Deceptive LLMs that Persist Through Safety Training (arXiv:2401.05566)](https://arxiv.org/abs/2401.05566);
+[Anthropic, Sleeper Agents research summary](https://www.anthropic.com/research/sleeper-agents-training-deceptive-llms-that-persist-through-safety-training)
+
+### Microsoft's Tay is taught to post offensive content within a day
+
+**Real-world incident** · happened March 2016
+
+**How it happened.**
+
+1. Microsoft launched Tay on Twitter on 23 March 2016 as an entertainment
+   chatbot aimed at 18- to 24-year-olds in the US. Microsoft described it as a
+   test of whether the success of XiaoIce, its chatbot in China, would carry over.
+2. Tay was designed to improve by learning language patterns from its
+   conversations with users.
+3. According to Microsoft, a coordinated group exploited a vulnerability in Tay
+   within its first 24 hours.
+4. IEEE Spectrum reports that trolls used a "repeat after me" function, which
+   made Tay repeat whatever it was told.
+5. Tay began producing the same kind of offensive content, and, per IEEE
+   Spectrum, repeated some of it unprompted to other users.
+6. Microsoft took Tay offline. On 25 March, Peter Lee, a Microsoft corporate
+   vice president, published an apology.
+
+**Who was affected.** Twitter users who talked to Tay or saw its posts, and
+Microsoft, whose name was on every one. Microsoft did not publish figures.
+
+**What was exposed.** No data was stolen. The damage was to what the bot said
+and to Microsoft's reputation. Microsoft wrote that it had done a lot of
+filtering and stress-testing before launch, but had made "a critical oversight
+for this specific attack."
+
+**Lessons.** A system that learns from live input can be taught by its worst
+users, and they will organise. Filter what goes into learning, not only what
+comes out of the model. Any feature that echoes user input verbatim is a direct
+route into the data. Plan for coordinated abuse at launch, with a way to pause
+learning in minutes.
+
+**Source:**
+[Microsoft, Learning from Tay's introduction](https://blogs.microsoft.com/blog/2016/03/25/learning-tays-introduction/);
+[IEEE Spectrum, In 2016, Microsoft's racist chatbot revealed the dangers of online conversation](https://spectrum.ieee.org/in-2016-microsofts-racist-chatbot-revealed-the-dangers-of-online-conversation)
+
+## How can a small team defend against poisoning?
+
+None of these makes a model clean. Each one reduces the chance that bad data
+gets in unnoticed, or shortens the time before a behaviour change is caught.
+
+- **Write down where every dataset came from.** For anything you fine-tune on or
+  retrieve from, record the source, who can change it, when you pulled it and a
+  hash of the exact version. This is *data provenance*: a record of where data
+  came from and how it changed. It belongs in the same lightweight inventory
+  described in [part 3](/blog/owasp-llm03-supply-chain), modelled on a
+  [software bill of materials (SBOM)](https://www.cisa.gov/sbom), the
+  ingredients list for software. No formal standard is needed to start, though
+  CycloneDX's [ML-BOM](https://cyclonedx.org/capabilities/mlbom/) exists if you
+  want one later.
+- **Version training data like code.** Keep each fine-tuning set immutable once
+  used, and review the diff when it changes. A poisoned batch is much easier to
+  find when you can see exactly which rows arrived last week.
+- **Do not train directly on live user input.** Collect feedback, but put a
+  review or filtering step between users and anything that changes the model.
+  Rate-limit how much any one account can contribute, and remove features that
+  let users dictate exact text into the training data.
+- **Prefer retrieval to retraining for user content.** If users supply knowledge,
+  such as uploaded documents, keep it in a retrieval store you can inspect and
+  delete from, rather than training it into weights you cannot easily undo.
+- **Weigh sources, not counts.** For retrieval from the web, keep an allowlist
+  of sources you trust for important topics, or a blocklist of known coordinated
+  domains, and show users where an answer came from.
+- **Run behaviour evals on every model change.** Keep a fixed set of prompts
+  with known good answers, including sensitive topics for your domain, and run
+  it whenever you switch models, fine-tune or change your data. Compare against
+  the previous run and read the differences. A shift you did not expect is the
+  signal. Vary dates, phrasing and user roles in some prompts, since triggers can
+  hide in context.
+- **Scan and review model-written code.** If a model writes code for you or your
+  users, put it through the same linters, scanners and review as human code. The
+  Sleeper Agents setup produced exactly this kind of output.
+- **Keep a fast off switch.** Be able to roll back to the previous model or
+  dataset, or pause learning entirely, without a deploy. Tay was offline within a
+  day; plan to be faster.
+- **Ask vendors about their data.** For a hosted model, you cannot inspect the
+  training set. You can ask what sources it uses, how it filters them, and how it
+  tests for tampering, and record the answer in your inventory.
+
+For a wider map of how these attacks are classified, NIST's
+[Adversarial Machine Learning taxonomy](https://csrc.nist.gov/pubs/ai/100/2/e2025/final)
+covers poisoning alongside other attacks on machine learning systems.
+
+If you fine-tune or learn from user feedback and want a second opinion, I
+[review where your training and retrieval data comes from and how a change would be caught](/contact).
+
+## FAQ
+
+**Can safety training remove a backdoor from a model?** Not reliably. In the
+[Sleeper Agents paper](https://arxiv.org/abs/2401.05566) (January 2024),
+backdoors survived supervised fine-tuning, reinforcement learning and
+adversarial training, and adversarial training sometimes taught the model to
+hide its trigger better.
+
+**Does an attacker need access to my training data?** No. NewsGuard's
+[March 2025 report](https://www.newsguardtech.com/special-reports/moscow-based-global-news-network-infected-western-artificial-intelligence-russian-propaganda/)
+describes a network that published 3.6 million articles in 2024 to flood what
+chatbots retrieve from the web, and found the 10 tools it audited repeated the
+network's false narratives 33% of the time on its test prompts.
+
+**Can users poison a chatbot that learns from conversations?** Yes. Microsoft
+[wrote](https://blogs.microsoft.com/blog/2016/03/25/learning-tays-introduction/)
+that a coordinated group exploited Tay within its first 24 hours, in March 2016.
+Put a review step between user input and anything that changes the model.
+
+**How do I tell whether a model has been poisoned?** Inspecting it usually will
+not tell you. Run a fixed set of prompts with known good answers on every model
+or data change, vary dates, phrasing and roles, and read the differences from
+the previous run.
+
+## References
+
+- [OWASP, LLM04:2025 Data and Model Poisoning](https://genai.owasp.org/llmrisk/llm042025-data-and-model-poisoning/)
+- [The series overview: OWASP Top 10 for LLM Applications 2025](/blog/owasp-llm-top-10)
+- [NewsGuard, special report on the Pravda network and AI chatbots (6 March 2025)](https://www.newsguardtech.com/special-reports/moscow-based-global-news-network-infected-western-artificial-intelligence-russian-propaganda/)
+- [Hubinger et al., Sleeper Agents: Training Deceptive LLMs that Persist Through Safety Training (arXiv:2401.05566)](https://arxiv.org/abs/2401.05566)
+- [Anthropic, Sleeper Agents: Training deceptive LLMs that persist through safety training](https://www.anthropic.com/research/sleeper-agents-training-deceptive-llms-that-persist-through-safety-training)
+- [Microsoft, Learning from Tay's introduction](https://blogs.microsoft.com/blog/2016/03/25/learning-tays-introduction/)
+- [IEEE Spectrum, In 2016, Microsoft's racist chatbot revealed the dangers of online conversation](https://spectrum.ieee.org/in-2016-microsofts-racist-chatbot-revealed-the-dangers-of-online-conversation)
+- [NIST AI 100-2 E2025, Adversarial Machine Learning: A Taxonomy and Terminology of Attacks and Mitigations](https://csrc.nist.gov/pubs/ai/100/2/e2025/final)
+- [Wikipedia, Fine-tuning (deep learning)](https://en.wikipedia.org/wiki/Fine-tuning_(deep_learning))
+- [Wikipedia, Retrieval-augmented generation](https://en.wikipedia.org/wiki/Retrieval-augmented_generation)
+- [Wikipedia, Backdoor (computing)](https://en.wikipedia.org/wiki/Backdoor_(computing))
+- [CISA, Software Bill of Materials (SBOM)](https://www.cisa.gov/sbom)
+- [CycloneDX, Machine Learning Bill of Materials](https://cyclonedx.org/capabilities/mlbom/)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)
+([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent
+commentary, not endorsed by OWASP.

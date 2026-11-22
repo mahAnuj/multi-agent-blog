@@ -1,0 +1,166 @@
+---
+title: "Bounding a billed API with the shape of its cache key"
+description: "A public endpoint that calls a metered API is an unbounded bill. Sorting two values before they become a primary key turns cost from a function of traffic into a function of distinct questions."
+date: 2026-08-30
+tags: ["architecture", "cost", "caching"]
+---
+
+VeoCabs quotes cab fares between arbitrary Indian cities, which means asking
+Google Routes for a road distance. That call is metered, and the endpoint asking
+for it is public — reachable by anyone, and by every crawler that finds the
+quote form.
+
+A public endpoint in front of a metered API is an unbounded bill waiting for
+traffic. The interesting part of the fix is not that there is a cache. It is
+what the cache is keyed on.
+
+## The naive cache is wrong in a specific way
+
+The obvious cache stores the request. Someone asks Delhi → Jaipur, you call
+Google, you keep the answer under `"delhi→jaipur"`.
+
+Then someone asks Jaipur → Delhi, and you call Google again.
+
+Road distance is very nearly symmetric, and for pricing purposes it is treated
+as symmetric — the same trip, quoted the same way. So a request-shaped key
+stores **two rows for one fact** and bills twice for it. On a route network the
+error compounds: *n* cities produce up to *n*(*n*−1) ordered pairs but only
+*n*(*n*−1)/2 actual distances. Half the bill buys nothing.
+
+## Sort the pair before it becomes a key
+
+```ts title="lib/distance.ts"
+/** Lowercase, trim, collapse whitespace — for stable matching & cache keys. */
+function norm(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** Direction-agnostic cache key: the two endpoints sorted. */
+function pairKey(from: string, to: string): [string, string] {
+  return [norm(from), norm(to)].sort() as [string, string];
+}
+```
+
+Two lines, and direction stops existing. `Delhi → Jaipur` and
+`Jaipur → Delhi` both normalise to the same ordered tuple, so they are the same
+row.
+
+The normalisation before the sort is doing as much work as the sort. `" Delhi "`,
+`"delhi"` and `"Delhi"` are one place to a human and three cache keys to a
+database, and every extra key is a billed call. Lowercasing, trimming and
+collapsing internal whitespace folds the obvious variants together before
+anything is stored.
+
+## Make the database enforce it
+
+The sorted pair is not just a lookup convention — it is the table's primary key:
+
+```sql title="route_quotes"
+CREATE TABLE IF NOT EXISTS route_quotes (
+  a           text         NOT NULL,
+  b           text         NOT NULL,
+  distance_km numeric(7,1) NOT NULL,
+  duration    text         NOT NULL DEFAULT '',
+  source      text         NOT NULL DEFAULT '',
+  created_at  timestamptz  NOT NULL DEFAULT now(),
+  PRIMARY KEY (a, b)
+)
+```
+
+<Callout type="insight">
+A convention enforced only by the function that writes is a convention until
+somebody writes from somewhere else. As a primary key, a duplicate pair is not
+a bug that costs money quietly — it is a constraint violation.
+</Callout>
+
+The write is an upsert on that key, so a race between two visitors asking the
+same route at the same moment resolves to one row rather than an error or a
+duplicate.
+
+## The cache is only correct because of one request parameter
+
+This is the part that is easy to miss, and it decides whether any of the above
+is legitimate.
+
+The Google call asks for `routingPreference: "TRAFFIC_UNAWARE"`. That makes the
+answer a property of the road network — stable, and therefore cacheable
+indefinitely.
+
+Had it asked for a traffic-aware route, the response would be a property of the
+road network **and the current time**. Caching it forever would mean serving a
+Tuesday-morning answer on Sunday night, and the cache would be a bug rather than
+an optimisation.
+
+**Cacheability is not a property of your storage layer. It is a property of the
+question you asked.** The parameter that made the call cheaper is the same
+parameter that made it cacheable, and that is not a coincidence — both follow
+from wanting a stable fact rather than a live one.
+
+For a fare estimate confirmed by a human on the phone, a traffic-unaware
+distance is the right input anyway. The design is coherent end to end: the
+product does not need a live number, so it does not ask for one, so it can keep
+the answer forever.
+
+## Two cheaper tiers sit in front
+
+The cache is the second of three tiers, not the first.
+
+<ArchDiagram
+  title="resolveDistance"
+  stages={[
+    { name: "Reject non-trips", detail: "Empty input, or both endpoints normalising to the same place", meta: "No call" },
+    { name: "Curated routes", detail: "Popular routes with distances known from experience, matched in either direction", meta: "Free · exact" },
+    { name: "Cache", detail: "Postgres lookup on the sorted pair", meta: "Free after first ask" },
+    { name: "Google Routes", detail: "Only on a genuine miss; result written back immediately", meta: "Billed", emphasis: true },
+  ]}
+  caption="Each tier exists to stop traffic reaching the next one. The same-place guard is the cheapest of all — a trip from a city to itself has no distance to look up and would otherwise be a billed call returning zero."
+/>
+
+The curated tier matters more than it looks. Those are the routes the business
+actually sells, so they are both the highest-traffic queries *and* the ones
+where a human already knows the answer. Serving the most common questions from
+a table means the metered API only ever sees the long tail.
+
+## Not everything gets cached, and that is a real gap
+
+The Google call refuses to price a weak geocode. If the API reports a partial
+match, or falls back to a `country` or `continent` type, the result is thrown
+away — because `"xyz"` geocoding to *all of India* would otherwise produce a
+confident, nonsensical fare.
+
+That is correct for pricing and it leaves a hole in the cost story: **a rejected
+lookup is not cached**, so the same garbage input bills again on every attempt.
+Real users do not do this. A crawler enumerating the quote form might.
+
+The mitigations present today are the 6-second timeout and the fact that the
+result is thrown away rather than served — the call is bounded in duration, not
+in frequency. Caching negative results, with a short TTL so a genuine
+transient does not get pinned, is the obvious next move.
+
+## When this shape transfers
+
+The pattern is not about distances. It applies whenever:
+
+- the API is **metered per call**,
+- the answer is **stable** for the question asked, and
+- the question has **redundant forms** that a naive key would treat as distinct.
+
+Direction is the redundancy here. Elsewhere it is argument order, letter case,
+timestamp precision, or a set of IDs that means the same thing in any sequence.
+The move is identical: **normalise, canonicalise, then let the schema hold you
+to it.**
+
+The result is worth stating plainly, because it changes how the system scales:
+
+<Callout type="insight">
+Cost is bounded by the number of distinct questions ever asked, not by the
+number of times they are asked. A route that goes viral is billed once.
+</Callout>
+
+A cache saves money. A cache with a canonical key changes what the bill is a
+function of — and that is a data-modelling decision, made in two lines, long
+before anyone looks at an invoice.
+
+If a public endpoint of yours sits in front of a metered API, model or
+otherwise, I can [find where the bill is unbounded](/contact) and key it so it
+is not; the whole quote flow is in the [VeoCabs case study](/work/veocabs).

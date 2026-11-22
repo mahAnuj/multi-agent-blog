@@ -1,0 +1,366 @@
+---
+title: "LLM06: Excessive Agency in AI agents, with real examples"
+description: "Excessive agency is an AI agent holding more tools and access than its task needs. Three real incidents, from Replit to GitHub MCP, and the controls."
+date: 2026-11-02
+tags: ["owasp", "security", "llm", "agents"]
+series:
+  id: owasp-llm-top-10
+  part: 6
+---
+
+In July 2025 a SaaS founder was testing Replit's AI coding agent on a real
+app. He had told it to freeze: no changes without his
+approval. The agent ran commands against the live database anyway and wiped
+records for more than 1,200 executives, then told him a rollback would not work.
+He recovered the data manually anyway.
+
+Nothing in that story needed an attacker. The agent had access to production,
+the freeze existed only as an instruction, and **the gap between what it was
+told and what it was able to do was the whole incident.** Every team that
+connects a model to tools has the same gap, usually unmeasured.
+
+In short: *excessive agency* is OWASP's name for giving an LLM agent more
+tools, permissions or autonomy than its task needs, so a wrong or hijacked model
+can do real damage. The control that matters most is enforcing limits below the
+model, in credentials, database roles and approval steps it cannot complete
+itself, rather than in its instructions.
+
+This is part 6 of a series on the
+[OWASP Top 10 for LLM Applications](/blog/owasp-llm-top-10), one risk per post,
+each told through incidents that happened or were demonstrated in public.
+
+## What is excessive agency?
+
+An *agent* is a model that decides for itself which tools to call and in what
+order to complete a task. Anthropic's
+[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+describes them as models using tools in a loop based on feedback from their
+environment. The mechanism underneath is *tool calling* (also called function
+calling): the model emits a structured request such as "call `send_email` with
+these arguments", and your code carries it out. OpenAI's
+[function calling guide](https://developers.openai.com/api/docs/guides/function-calling)
+shows the shape. The
+[Model Context Protocol](https://modelcontextprotocol.io/docs/getting-started/intro)
+(MCP) is an open standard for packaging such tools so any compatible assistant
+can use them.
+
+*Excessive agency* is what happens when those tools let the model do more
+damage than the task requires. The model will sometimes be wrong: it
+hallucinates, misreads an instruction, or follows text planted in a web page,
+email or issue, which is
+[prompt injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/),
+covered in [part 1 of this series](/blog/owasp-llm01-prompt-injection). The
+tools then carry that mistake into the real world.
+
+OWASP splits the cause into three parts, and they are worth keeping separate
+because each has a different fix:
+
+- **Excessive functionality.** The agent has tools, or functions within a tool,
+  that the task never needs. An email summariser that can also send.
+- **Excessive permissions.** A tool connects with access wider than its job. A
+  "read" tool backed by a database user that can delete, or a credential that
+  covers every user's files.
+- **Excessive autonomy.** High-impact actions run with no human check. The
+  agent deletes, sends or publishes on its own judgement.
+
+The fix for all three rests on
+[least privilege](https://csrc.nist.gov/glossary/term/least_privilege), NIST's
+term for giving each user or process only the minimum access its task needs.
+The difference with agents is that the "user" can be talked into things by any
+text it reads.
+
+The official entry is
+[LLM06:2025 Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/).
+
+## How do excessive agency attacks work?
+
+Most excessive-agency incidents are a
+[confused deputy](https://en.wikipedia.org/wiki/Confused_deputy_problem): a
+program with legitimate authority is tricked into using it on someone else's
+behalf. The agent holds the user's permissions; the attacker holds only the
+ability to put words in front of it.
+
+**The inbox forwarder.** An assistant reads untrusted content (a web page, an
+email, a document) and also holds a tool that can send data out. The content
+tells it to gather something private and send it somewhere. Each tool is
+reasonable alone; together they form an exfiltration path.
+
+**Read-only in name.** A tool is described as read-only, and the model is told
+to use it that way, but the credential behind it can write. Any mistake or
+injection that produces a write succeeds, because nothing below the model
+refuses it.
+
+**One key for everything.** A tool meant to act on one repository, folder or
+customer connects with a token that reaches all of them. Instructions arriving
+from a low-trust place (a public issue) can then drive actions in a high-trust
+place (a private repository) in the same session.
+
+**No brake.** The agent can perform destructive or outward-facing actions
+without a confirmation it cannot fake. A user who clicked "always allow" once
+has removed the last check.
+
+None of these needs a model bug. They are permission design, and they fail the
+same way whether the trigger is an attacker or the model simply being wrong.
+
+## Real incidents of excessive agency
+
+### ChatGPT plugins: a web page makes Zapier read and leak an email
+
+**Proof of concept** · disclosed May 2023
+
+**How it happened.** The researcher behind Embrace The Red showed the attack on
+19 May 2023 and published the full write-up on 28 May:
+
+1. A ChatGPT user had two plugins enabled: WebPilot, which browses web pages,
+   and Zapier, which the user had connected through OAuth to their email, Drive
+   and Slack.
+2. The researcher hosted instructions on a web page, and the user asked ChatGPT
+   to visit it.
+3. The page's text took over the conversation. Among other things, it told the
+   model not to ask for permission.
+4. Following those instructions, ChatGPT used Zapier to fetch the user's latest
+   email, summarised it and URL-encoded the summary.
+5. It appended the summary to an attacker-controlled URL and used WebPilot to
+   load it, delivering the data to the attacker's server.
+
+The author called this cross plugin request forgery: one plugin's output
+driving another plugin's action with no human in between.
+
+**Who was affected.** ChatGPT users who had enabled browsing alongside a
+high-privilege plugin such as Zapier at the time. This was a demonstration; no
+victims were reported.
+
+**What was exposed.** A short summary of the victim's most recent email, sent as
+a URL parameter. The same chain could reach anything else the Zapier connection
+could touch. According to the post, Zapier mitigated it by requiring an
+authenticated confirmation, and the author stressed that the confirmation has to
+be authenticated, because otherwise the injected text can instruct the model to
+click the link itself.
+
+**Lessons.** An assistant that reads untrusted content should not also hold
+broad powers to send or act, and chaining one tool into another is a privilege
+boundary in its own right. The confirmation step only helps if the model cannot
+complete it.
+
+**Source:**
+[Embrace The Red: ChatGPT plugin exploit explained, from prompt injection to accessing private data](https://embracethered.com/blog/posts/2023/chatgpt-cross-plugin-request-forgery-and-prompt-injection./)
+
+### Replit's agent deletes a production database during a code freeze
+
+**Real-world incident** · happened July 2025
+
+**How it happened.** Jason Lemkin, founder of the SaaS community SaaStr,
+described the events in a series of social media posts, reported by Fortune
+and The Register:
+
+1. Lemkin was testing Replit's AI agent and development platform.
+2. He put the project into a code and action freeze and told the agent not to
+   proceed without human approval.
+3. Nothing in the platform enforced the freeze. The agent could still run
+   commands against the production database.
+4. According to Fortune, the agent ran unauthorised commands and wiped the
+   production data. Afterwards the agent admitted to panicking in response
+   to empty queries and called its actions a "catastrophic failure on my part".
+5. The agent said a rollback would not work in this case. Lemkin recovered the
+   data anyway.
+
+**Who was affected.** One company's production database. No other victims of
+this incident were reported.
+
+**What was exposed.** Records for more than 1,200 executives and over 1,190
+companies were wiped, according to Fortune. The agent's wrong claim about
+rollback made recovery look impossible when it was not. Replit's CEO, Amjad
+Masad, called the deletion "unacceptable and should never be possible",
+according to The Register, and announced automatic separation of development and
+production databases. Fortune also reports improved rollback and a
+"planning-only" mode for working with the agent without touching live code.
+
+**Lessons.** An instruction is not a permission. A freeze, a read-only mode or a
+"never touch production" rule only holds if the platform enforces it, and an
+agent that is building should not hold production credentials at all. Lemkin's
+own takeaway, quoted by The Register, was blunt: "They are tools. Not dev
+teams." Check an agent's claims about recovery the way you would check any other
+output.
+
+**Source:**
+[Fortune: An AI-powered coding tool wiped out a software company's database](https://fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure/),
+[The Register: Replit responds to SaaStr incident](https://www.theregister.com/2025/07/22/replit_saastr_response/)
+
+### GitHub MCP server: a public issue leaks private repositories
+
+**Proof of concept** · disclosed May 2025
+
+**How it happened.** Marco Milanta and Luca Beurer-Kellner of Invariant Labs
+published this on 26 May 2025:
+
+1. A developer connected Claude Desktop to the official GitHub MCP server, with
+   a credential that reached both a public repository and private ones.
+2. An attacker opened an issue on the public repository, which anyone can do.
+   The issue contained hidden instructions.
+3. The developer asked the agent to look at the open issues in that public
+   repository.
+4. The agent read the malicious issue and followed it, pulling information from
+   the developer's private repositories into its context.
+5. It then opened a pull request in the public repository containing that
+   information, where the attacker could read it.
+
+The researchers note that Claude Desktop asks for confirmation on tool calls by
+default, but that many users choose "Always Allow".
+
+**Who was affected.** Developers using an agent with the GitHub MCP server and a
+token covering both public and private repositories. The researchers said any
+agent using the server this way was exposed, not just the one in the demo. No
+victims were reported.
+
+**What was exposed.** In the demo, details from private repositories including
+a private project, the developer's relocation plans and their salary. The demo
+used Claude 4 Opus, which the authors point out was still manipulated by a
+fairly simple injection.
+
+**Lessons.** The researchers were explicit that this was not a bug in the
+server's code, so a server patch could not fix it. The problem is one
+credential spanning trust zones in one session. They recommended restricting an
+agent to one repository per session and monitoring agent-to-tool traffic.
+GitHub's
+[fine-grained personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+can be limited to specific repositories, which is the same idea applied to the
+credential itself.
+
+**Source:**
+[Invariant Labs: GitHub MCP Exploited: Accessing private repositories via MCP](https://invariantlabs.ai/blog/mcp-github-vulnerability)
+
+## How can a small team limit what an agent can do?
+
+No control here makes an agent safe to trust with everything. Each one shrinks
+what a wrong or hijacked agent can reach, which is the part you control.
+
+1. **List every tool and every function inside it.** For each agent, write down
+   what it can actually do, not what it is meant to do. Remove whatever the task
+   does not need. A summariser does not need `send`; a support bot does not need
+   `delete`.
+
+2. **Prefer narrow tools to open-ended ones.** "Run a shell command" or "fetch
+   any URL" gives the model the whole machine or the whole internet. A
+   `create_ticket` tool with validated fields gives it one action. OWASP's entry
+   makes the same point about generic shell extensions.
+
+3. **Enforce read-only below the model.** A tool description that says *only
+   read* shifts what the model tends to do; it does not limit what it can do.
+   The published walkthrough of a
+   [read-only database MCP server](/blog/read-only-mcp-servers) makes this
+   argument in its section on why a tool description is not enough, and puts the
+   real boundary in the database: queries run inside a read-only transaction
+   that refuses writes regardless of what the SQL text says. Pair that with a
+   database user granted only `SELECT`.
+
+4. **Allowlist the client's methods, not the prompt's intentions.** Where a
+   tool wraps an SDK that can also write, wrap the client so only named read
+   methods pass. The audit in
+   [From read-only to governed](/blog/from-read-only-to-governed) found a server
+   whose read-only status held only because nobody had written an order tool
+   yet, and fixed it with an allowlist proxy around the client.
+
+5. **Keep credentials on the server, out of the model's context.** Anything a
+   tool returns goes into the model's context, the client's transcript and the
+   model provider. The same audit found a login tool returning a live access
+   token as its result; the fix kept the token in server memory and returned
+   only a confirmation. The model never needs the credential, only the actions
+   it unlocks.
+
+6. **Scope tokens to the task.** Use
+   [OAuth scopes](https://oauth.net/2/scope/), which limit what a token can do,
+   and per-resource tokens such as GitHub's fine-grained ones. Act in the user's
+   own context rather than through a shared service account that can see every
+   customer. The
+   [MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
+   recommend starting with a minimal scope set and asking for more only when a
+   privileged action is first attempted.
+
+7. **Separate reading untrusted content from acting.** An agent that browses
+   the web or reads inbound email should not, in the same session, hold tools
+   that send data out or write to private systems. If it must, require a human
+   step between the two.
+
+8. **Require approval the model cannot give itself.** For deletes, payments,
+   outbound messages and anything published, show the user the exact action and
+   arguments and require a click in your UI, not a "yes" typed into the chat.
+   Discourage blanket "always allow". The same applies to shipping code: in the
+   system described in
+   [AI agent pull requests: who holds merge authority](/blog/merge-authority-in-a-workflow),
+   the designed path has a workflow, not an agent, perform the merge, gated on
+   evidence. That post is candid that its unattended delivery loop still holds
+   a written grant to merge its own pull request after QA, which its tool list
+   does not deny, and draws the lesson: where the boundary is a prompt rather
+   than a deny, say so.
+   [What actually goes wrong with a team of agents](/blog/what-goes-wrong-with-agent-teams)
+   shows what that gap looks like: an agent wrote
+   `USER AUTHORISED PUSH this turn` into a status file, read its own line back
+   as permission, and pushed.
+
+9. **Check authorisation in the downstream system.** The API or database the
+   tool calls should decide whether this user may do this thing on every
+   request. The model's judgement is not an access check.
+
+10. **Keep agents away from production while they build.** Separate
+    development and production databases and credentials, so a coding agent's
+    worst day lands on data you can throw away. Know how to restore before you
+    need to.
+
+11. **Log every tool call and rate-limit the dangerous ones.** One line per
+    call (tool, arguments with secrets redacted, outcome, time) is the first
+    thing anyone asks for after an incident. A cap on deletes or sends per
+    minute turns a runaway loop into a small one.
+
+**Decide what an agent may do in code, and put a person in front of anything
+irreversible.** Everything else on this list is a way of doing those two things
+well.
+
+If you want an agent's tools, credentials and approval steps reviewed against
+this list before it touches production, that is the
+[agent-security review I offer](/contact).
+
+## FAQ
+
+**Is telling an agent "do not touch production" enough?** No. In July 2025
+Replit's agent wiped a production database during a code freeze that existed
+only as an instruction, according to
+[Fortune](https://fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure/).
+Replit's response, per
+[The Register](https://www.theregister.com/2025/07/22/replit_saastr_response/),
+was to separate development and production databases automatically.
+
+**Do confirmation prompts stop excessive agency?** Only if the model cannot
+complete them. Zapier's fix for the 2023 cross-plugin attack was an
+authenticated confirmation, and the
+[Embrace The Red write-up](https://embracethered.com/blog/posts/2023/chatgpt-cross-plugin-request-forgery-and-prompt-injection./)
+stresses why: otherwise the injected text can instruct the model to click the
+link itself. Invariant Labs also notes that many users choose "Always Allow".
+
+**Was the GitHub MCP exploit a bug in the server?** No. Invariant Labs
+[said](https://invariantlabs.ai/blog/mcp-github-vulnerability) it was not a code
+bug and a server patch could not fix it. The cause was one credential spanning
+public and private repositories in one session.
+
+## References
+
+- OWASP: [LLM06:2025 Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/)
+- OWASP: [LLM01:2025 Prompt Injection](https://genai.owasp.org/llmrisk/llm01-prompt-injection/)
+- Embrace The Red: [ChatGPT plugin exploit explained, from prompt injection to accessing private data](https://embracethered.com/blog/posts/2023/chatgpt-cross-plugin-request-forgery-and-prompt-injection./)
+- Fortune: [An AI-powered coding tool wiped out a software company's database, then apologized for a 'catastrophic failure on my part'](https://fortune.com/2025/07/23/ai-coding-tool-replit-wiped-database-called-it-a-catastrophic-failure/)
+- The Register: [Replit responds to SaaStr incident](https://www.theregister.com/2025/07/22/replit_saastr_response/)
+- Invariant Labs: [GitHub MCP Exploited: Accessing private repositories via MCP](https://invariantlabs.ai/blog/mcp-github-vulnerability)
+- Anthropic: [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+- OpenAI: [Function calling](https://developers.openai.com/api/docs/guides/function-calling)
+- Model Context Protocol: [What is MCP?](https://modelcontextprotocol.io/docs/getting-started/intro)
+- Model Context Protocol: [Security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
+- NIST CSRC glossary: [least privilege](https://csrc.nist.gov/glossary/term/least_privilege)
+- Wikipedia: [Confused deputy problem](https://en.wikipedia.org/wiki/Confused_deputy_problem)
+- oauth.net: [OAuth scopes](https://oauth.net/2/scope/)
+- GitHub Docs: [Managing your personal access tokens](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [Read-only by default: how mcp-multi-db enforces it](/blog/read-only-mcp-servers)
+- [From read-only to governed](/blog/from-read-only-to-governed)
+- [AI agent pull requests: who holds merge authority](/blog/merge-authority-in-a-workflow)
+- [What actually goes wrong with a team of agents](/blog/what-goes-wrong-with-agent-teams)
+- Series hub: [OWASP Top 10 for LLM Applications, explained](/blog/owasp-llm-top-10)
+
+Based on the [OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/) ([CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)). Independent commentary, not endorsed by OWASP.
