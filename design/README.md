@@ -16,7 +16,11 @@ The layout changes at five breakpoints. Each range has its own mockup:
 Between breakpoints, the three widest ranges keep the column widths shown in their mockup and centre the page. In the three narrowest ranges, the post's text column fills the space between the side gutters, up to 640px.
 
 - `home.*` and `post.*`: full pages, light and dark.
-- `state.post-scrolled.*`: the post page scrolled to "The hand-off format".
-- `state.contents-open.*`: the post's contents box opened.
+- `state.post-scrolled.*`: the post page scrolled to "The hand-off format", at every width.
+- `state.post-table.*`: the post page scrolled to "What it cost", at every width.
+- `state.contents-open.*`: the post's contents opened (from the bar at the bottom of the screen at 360 and 600, from the floating Contents button at 834, and the contents box at 1100).
+- `state.recent-swiped.*`: the Recent list swiped one card to the left.
 - `state.search-open.*`: search opened with ⌘K, after typing "agent".
 - `state.menu-open.*`: the menu open.
+
+The fixture post's figure is `/fixtures/handoff-stages.svg`, which the app already serves from `client/public/fixtures/`. The like count in the mockups is the count for a post nobody has liked yet.

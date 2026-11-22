@@ -36,6 +36,8 @@ Text roles:
 - `h2`: a section heading inside a post
 - `quote`: the pull quote's text
 - `code`: text in a code block
+- `caption`: a figure's caption
+- `tableCell`: an ordinary cell in a post table (at widths where the table is shown as cards, the value text on a card)
 - `note`: a footnote's text, wherever the note appears at that width
 
 Layout: `postColumns` are the widths of the post page's content columns at that range's mockup width (contents list, text, notes; only the ones shown). `postGap` is the space between them (0 when there is one column). `pageGutter` is the distance from the left edge of the window to the start of the header content (the site name) at that mockup width.

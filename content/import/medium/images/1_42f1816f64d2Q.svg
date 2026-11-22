@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" font-family="Helvetica, Arial, sans-serif">
+  <rect width="1200" height="560" fill="#ffffff"/>
+  <text x="60" y="64" font-size="28" font-weight="700" fill="#1d1c1a">validateReadOnly.ts</text>
+  <rect x="60" y="110" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="140" font-size="20" font-weight="600" fill="#1d1c1a">Reject multiple statements</text>
+  <text x="80" y="165" font-size="15" fill="#4d4b46">One trailing semicolon is stripped; any remaining …</text>
+  <path d="M480 145 L 840 310" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="198" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="228" font-size="20" font-weight="600" fill="#1d1c1a">Allowlist the opening keyword</text>
+  <text x="80" y="253" font-size="15" fill="#4d4b46">Only SELECT, WITH and EXPLAIN may start a query</text>
+  <path d="M480 233 L 840 310" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="286" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="316" font-size="20" font-weight="600" fill="#1d1c1a">Denylist mutating keywords</text>
+  <text x="80" y="341" font-size="15" fill="#4d4b46">INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNC…</text>
+  <path d="M480 321 L 840 310" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="374" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="404" font-size="20" font-weight="600" fill="#1d1c1a">Inject or clamp a LIMIT</text>
+  <text x="80" y="429" font-size="15" fill="#4d4b46">Adds LIMIT 100 when absent; clamps an existing one…</text>
+  <path d="M480 409 L 840 310" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="840" y="270" width="300" height="80" rx="12" fill="#1d1c1a"/>
+  <text x="860" y="318" font-size="24" font-weight="700" fill="#ffffff">validateReadOnly</text>
+</svg>

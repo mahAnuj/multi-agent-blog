@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" font-family="Helvetica, Arial, sans-serif">
+  <rect width="1200" height="640" fill="#ffffff"/>
+  <text x="60" y="64" font-size="28" font-weight="700" fill="#1d1c1a">Where an AI product’s suppliers enter</text>
+  <rect x="60" y="110" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="140" font-size="20" font-weight="600" fill="#1d1c1a">Package registry</text>
+  <text x="80" y="165" font-size="15" fill="#4d4b46">PyPI, npm: libraries and their dependencies</text>
+  <path d="M480 145 L 840 350" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="198" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="228" font-size="20" font-weight="600" fill="#1d1c1a">Model hub</text>
+  <text x="80" y="253" font-size="15" fill="#4d4b46">Pre-trained models and the model cards beside them</text>
+  <path d="M480 233 L 840 350" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="286" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="316" font-size="20" font-weight="600" fill="#1d1c1a">Derived models</text>
+  <text x="80" y="341" font-size="15" fill="#4d4b46">Adapters, merges and quantised copies</text>
+  <path d="M480 321 L 840 350" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="374" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="404" font-size="20" font-weight="600" fill="#1d1c1a">Model file formats</text>
+  <text x="80" y="429" font-size="15" fill="#4d4b46">Pickle can run code when a model loads</text>
+  <path d="M480 409 L 840 350" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="60" y="462" width="420" height="70" rx="10" fill="#f4f1ea" stroke="#3b3a36" stroke-width="2"/>
+  <text x="80" y="492" font-size="20" font-weight="600" fill="#1d1c1a">Vendor terms</text>
+  <text x="80" y="517" font-size="15" fill="#4d4b46">What a provider may do with your data</text>
+  <path d="M480 497 L 840 350" stroke="#8a8780" stroke-width="2" fill="none"/>
+  <rect x="840" y="310" width="300" height="80" rx="12" fill="#1d1c1a"/>
+  <text x="860" y="358" font-size="24" font-weight="700" fill="#ffffff">Your AI product</text>
+</svg>
